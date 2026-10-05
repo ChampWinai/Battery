@@ -12,6 +12,7 @@
 รัน:  pyw battery_monitor.py        ทดสอบ:  py battery_monitor.py --test
 """
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -28,7 +29,6 @@ except ImportError:
     import pystray
     from PIL import Image, ImageDraw, ImageFont
 
-REFRESH_S = 60
 CACHE = Path(__file__).with_name("battery_cache.json")
 COMPX_VIDS = {0x3554}
 VENDOR_PAGE = 0xFF02
@@ -195,32 +195,151 @@ def tooltip(name, res):
     return f"{name}: {res[0]}%" + (" กำลังชาร์จ" if res[1] else "")
 
 
+# ---------- ตั้งค่า ----------
+
+STARTUP_LNK = Path(os.environ.get("APPDATA", "")) / r"Microsoft\Windows\Start Menu\Programs\Startup\Battery Tray.lnk"
+INTERVALS = {"30 วินาที": 30, "1 นาที": 60, "5 นาที": 300, "15 นาที": 900}
+ALERTS = {"ไม่แจ้งเตือน": 0, "≤ 10%": 10, "≤ 20%": 20, "≤ 30%": 30}
+DEFAULTS = {"interval": 60, "alert": 20, "hidden": [], "names": {}}
+
+
+def set_startup(on):
+    if not on:
+        STARTUP_LNK.unlink(missing_ok=True)
+        return
+    script = Path(__file__).resolve()
+    ps = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:LNK);"
+          "$s.TargetPath=$env:PYW; $s.Arguments=[char]34+$env:SCRIPT+[char]34;"
+          "$s.WorkingDirectory=$env:DIR; $s.Description='Battery Tray'; $s.Save()")
+    env = dict(os.environ, LNK=str(STARTUP_LNK), PYW=str(Path(sys.executable).with_name("pythonw.exe")),
+               SCRIPT=str(script), DIR=str(script.parent))
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps], env=env,
+                   creationflags=subprocess.CREATE_NO_WINDOW)
+
+
+def settings_window(devices, settings, last, on_save):
+    """หน้าต่างตั้งค่า (tkinter ใน thread ของตัวเอง)"""
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+
+    root = tk.Tk()
+    root.title("Battery Tray — ตั้งค่า")
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+    style = ttk.Style(root)
+    if "vista" in style.theme_names():
+        style.theme_use("vista")
+    font = ("Leelawadee UI", 10)
+    root.option_add("*Font", font)
+    style.configure(".", font=font)
+    pad = {"padx": 12, "pady": 4}
+
+    ttk.Label(root, text="อุปกรณ์", font=("Leelawadee UI", 11, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(12, 2))
+    ttk.Label(root, text="แสดง").grid(row=1, column=0, **pad)
+    ttk.Label(root, text="ชื่อที่แสดง").grid(row=1, column=1, sticky="w", **pad)
+    ttk.Label(root, text="แบตล่าสุด").grid(row=1, column=2, sticky="w", **pad)
+    rows = []
+    for i, dev in enumerate(devices, start=2):
+        show = tk.BooleanVar(value=dev["key"] not in settings["hidden"])
+        name = tk.StringVar(value=settings["names"].get(dev["key"], dev["name"]))
+        ttk.Checkbutton(root, variable=show).grid(row=i, column=0, **pad)
+        ttk.Entry(root, textvariable=name, width=30).grid(row=i, column=1, sticky="w", **pad)
+        old = last.get(dev["key"])
+        ttk.Label(root, text=f"{old[0][0]}%  ({old[1]})" if old else "ยังไม่ทราบ").grid(row=i, column=2, sticky="w", **pad)
+        rows.append((dev, show, name))
+
+    r = len(devices) + 2
+    ttk.Separator(root).grid(row=r, column=0, columnspan=3, sticky="ew", pady=8)
+    ttk.Label(root, text="ทั่วไป", font=("Leelawadee UI", 11, "bold")).grid(row=r + 1, column=0, columnspan=3, sticky="w", padx=12)
+    startup = tk.BooleanVar(value=STARTUP_LNK.exists())
+    ttk.Checkbutton(root, text="เปิดพร้อม Windows", variable=startup).grid(row=r + 2, column=0, columnspan=3, sticky="w", **pad)
+
+    def combo(row, label, options, current):
+        ttk.Label(root, text=label).grid(row=row, column=0, columnspan=2, sticky="w", **pad)
+        var = tk.StringVar(value=next((k for k, v in options.items() if v == current), next(iter(options))))
+        ttk.Combobox(root, textvariable=var, values=list(options), state="readonly", width=14).grid(row=row, column=2, sticky="w", **pad)
+        return var
+
+    interval = combo(r + 3, "อัปเดตค่าทุก", INTERVALS, settings["interval"])
+    alert = combo(r + 4, "แจ้งเตือนเมื่อแบต", ALERTS, settings["alert"])
+
+    def save(*_):
+        if not any(show.get() for _, show, _ in rows):
+            messagebox.showwarning("Battery Tray", "ต้องแสดงอย่างน้อย 1 อุปกรณ์\n(ไม่งั้นจะเปิดหน้าตั้งค่านี้ไม่ได้อีก)", parent=root)
+            return
+        settings["hidden"] = [d["key"] for d, show, _ in rows if not show.get()]
+        settings["names"] = {d["key"]: n.get().strip() for d, _, n in rows
+                             if n.get().strip() and n.get().strip() != d["name"]}
+        settings["interval"] = INTERVALS[interval.get()]
+        settings["alert"] = ALERTS[alert.get()]
+        if startup.get() != STARTUP_LNK.exists():
+            set_startup(startup.get())
+        root.destroy()
+        on_save()
+
+    bar = ttk.Frame(root)
+    bar.grid(row=r + 5, column=0, columnspan=3, sticky="e", padx=12, pady=12)
+    ttk.Button(bar, text="ยกเลิก", command=root.destroy).pack(side="right", padx=(6, 0))
+    ttk.Button(bar, text="บันทึก", command=save).pack(side="right")
+    root.bind("<Return>", save)
+    root.bind("<Escape>", lambda _: root.destroy())
+    root.mainloop()
+
+
 # ---------- แอป ----------
 
 def app():
     cache = load_cache()
+    first_run = "settings" not in cache
+    settings = {**DEFAULTS, **cache.get("settings", {})}
+    cache["settings"] = settings
     last = cache.setdefault("last", {})
     devices = discover(cache) or [{"key": "none", "name": "ไม่พบอุปกรณ์ที่รองรับ", "read": lambda: None}]
     save_cache(cache)
-    stop = threading.Event()
+    stop, wake, lock, settings_open = threading.Event(), threading.Event(), threading.Lock(), threading.Lock()
+    alerted = set()
     icons = []
 
-    def refresh(*_):
-        for dev, icon in zip(devices, icons):
-            res = dev["read"]()
-            if res:
-                last[dev["key"]] = [list(res), time.strftime("%d/%m %H:%M")]
-                icon.icon, icon.title = make_icon(res), tooltip(dev["name"], res)
-            elif dev["key"] in last:
-                old, at = last[dev["key"]]
-                icon.icon = make_icon(old, stale=True)
-                icon.title = f"{dev['name']}: {old[0]}% (ค่าล่าสุด {at}, ตอนนี้หลับอยู่)"
-            else:
-                icon.icon, icon.title = make_icon(None), tooltip(dev["name"], None)
-        save_cache(cache)
+    def label(dev):
+        return settings["names"].get(dev["key"], dev["name"])
+
+    def refresh():
+        with lock:
+            for dev, icon in zip(devices, icons):
+                icon.visible = dev["key"] not in settings["hidden"]
+                res = dev["read"]()
+                name = label(dev)
+                if res:
+                    last[dev["key"]] = [list(res), time.strftime("%d/%m %H:%M")]
+                    icon.icon, icon.title = make_icon(res), tooltip(name, res)
+                    low = bool(settings["alert"]) and res[0] <= settings["alert"] and not res[1]
+                    if low and dev["key"] not in alerted:
+                        icon.notify(f"{name} เหลือ {res[0]}% — ควรชาร์จ", "แบตใกล้หมด")
+                        alerted.add(dev["key"])
+                    elif not low:
+                        alerted.discard(dev["key"])
+                elif dev["key"] in last:
+                    old, at = last[dev["key"]]
+                    icon.icon = make_icon(old, stale=True)
+                    icon.title = f"{name}: {old[0]}% (ค่าล่าสุด {at}, ตอนนี้หลับอยู่)"
+                else:
+                    icon.icon, icon.title = make_icon(None), tooltip(name, None)
+            save_cache(cache)
+
+    def open_settings(*_):
+        if not settings_open.acquire(blocking=False):
+            return  # เปิดอยู่แล้ว
+
+        def run():
+            try:
+                settings_window(devices, settings, last, on_save=wake.set)
+            finally:
+                settings_open.release()
+        threading.Thread(target=run, daemon=True).start()
 
     def quit_all(*_):
         stop.set()
+        wake.set()
         for icon in icons:
             icon.stop()
 
@@ -231,20 +350,27 @@ def app():
         subprocess.Popen([sys.executable, *sys.argv])
         quit_all()
 
-    menu = pystray.Menu(pystray.MenuItem("รีเฟรช", refresh, default=True),
+    menu = pystray.Menu(pystray.MenuItem("ตั้งค่า...", open_settings, default=True),
+                        pystray.MenuItem("รีเฟรช", lambda *_: wake.set()),
                         pystray.MenuItem("ค้นหาอุปกรณ์ใหม่", rescan),
+                        pystray.Menu.SEPARATOR,
                         pystray.MenuItem("ปิด", quit_all))
     for dev in devices:
         old = last.get(dev["key"])
         start = make_icon(old[0], stale=True) if old else make_icon(None)
-        icons.append(pystray.Icon("battery_" + dev["key"], start, dev["name"], menu))
+        icons.append(pystray.Icon("battery_" + dev["key"], start, label(dev), menu))
     for icon in icons[1:]:
         icon.run_detached()
 
     def loop():
+        show_first = first_run
         while not stop.is_set():
             refresh()
-            stop.wait(REFRESH_S)
+            if show_first:
+                show_first = False
+                open_settings()
+            wake.wait(settings["interval"])
+            wake.clear()
 
     threading.Thread(target=loop, daemon=True).start()
     icons[0].run()
