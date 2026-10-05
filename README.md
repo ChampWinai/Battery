@@ -27,6 +27,8 @@ Settings → Personalization → Taskbar → Other system tray icons → เป�
 
 ## หน้าตั้งค่า
 
+<img src="docs/settings.png" alt="หน้าตั้งค่า" width="380">
+
 - เปิด/ปิดไอคอนของแต่ละอุปกรณ์ และตั้งชื่อเรียกเอง
 - เปิดพร้อม Windows
 - อัปเดตค่าทุก 30 วินาที / 1 / 5 / 15 นาที
