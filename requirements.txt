@@ -1,3 +1,4 @@
 hidapi
 pystray
 pillow
+customtkinter

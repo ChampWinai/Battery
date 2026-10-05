@@ -24,7 +24,7 @@ try:
     import pystray
     from PIL import Image, ImageDraw, ImageFont
 except ImportError:
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "hidapi", "pystray", "pillow"])
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "hidapi", "pystray", "pillow", "customtkinter"])
     import hid
     import pystray
     from PIL import Image, ImageDraw, ImageFont
@@ -198,8 +198,6 @@ def tooltip(name, res):
 # ---------- ตั้งค่า ----------
 
 STARTUP_LNK = Path(os.environ.get("APPDATA", "")) / r"Microsoft\Windows\Start Menu\Programs\Startup\Battery Tray.lnk"
-INTERVALS = {"30 วินาที": 30, "1 นาที": 60, "5 นาที": 300, "15 นาที": 900}
-ALERTS = {"ไม่แจ้งเตือน": 0, "≤ 10%": 10, "≤ 20%": 20, "≤ 30%": 30}
 DEFAULTS = {"interval": 60, "alert": 20, "hidden": [], "names": {}}
 
 
@@ -217,70 +215,110 @@ def set_startup(on):
                    creationflags=subprocess.CREATE_NO_WINDOW)
 
 
-def settings_window(devices, settings, last, on_save):
-    """หน้าต่างตั้งค่า (tkinter ใน thread ของตัวเอง)"""
-    import tkinter as tk
-    from tkinter import messagebox, ttk
+def settings_window(devices, settings, last, kinds, on_save):
+    """หน้าต่างตั้งค่า (customtkinter ใน thread ของตัวเอง)"""
+    import customtkinter as ctk
 
-    root = tk.Tk()
-    root.title("Battery Tray — ตั้งค่า")
+    BG, CARD, LINE = "#0e1014", "#171a21", "#232733"
+    TEXT, MUTED, ACCENT = "#eef0f4", "#8a90a0", "#4f8cff"
+    TH = "Leelawadee UI"
+    GLYPH = {"mouse": "", "keyboard": "", None: ""}  # Segoe MDL2 Assets
+
+    ctk.set_appearance_mode("dark")
+    root = ctk.CTk(fg_color=BG)
+    root.title("Battery Tray")
     root.resizable(False, False)
     root.attributes("-topmost", True)
-    style = ttk.Style(root)
-    if "vista" in style.theme_names():
-        style.theme_use("vista")
-    font = ("Leelawadee UI", 10)
-    root.option_add("*Font", font)
-    style.configure(".", font=font)
-    pad = {"padx": 12, "pady": 4}
+    body = ctk.CTkFrame(root, fg_color=BG)
+    body.pack(padx=22, pady=20, fill="both")
 
-    ttk.Label(root, text="อุปกรณ์", font=("Leelawadee UI", 11, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", padx=12, pady=(12, 2))
-    ttk.Label(root, text="แสดง").grid(row=1, column=0, **pad)
-    ttk.Label(root, text="ชื่อที่แสดง").grid(row=1, column=1, sticky="w", **pad)
-    ttk.Label(root, text="แบตล่าสุด").grid(row=1, column=2, sticky="w", **pad)
+    ctk.CTkLabel(body, text="Battery Tray", font=(TH, 22, "bold"), text_color=TEXT).pack(anchor="w")
+    ctk.CTkLabel(body, text="แบตเตอรี่อุปกรณ์ไร้สายของคุณ", font=(TH, 12), text_color=MUTED).pack(anchor="w", pady=(0, 14))
+
     rows = []
-    for i, dev in enumerate(devices, start=2):
-        show = tk.BooleanVar(value=dev["key"] not in settings["hidden"])
-        name = tk.StringVar(value=settings["names"].get(dev["key"], dev["name"]))
-        ttk.Checkbutton(root, variable=show).grid(row=i, column=0, **pad)
-        ttk.Entry(root, textvariable=name, width=30).grid(row=i, column=1, sticky="w", **pad)
+    for dev in devices:
         old = last.get(dev["key"])
-        ttk.Label(root, text=f"{old[0][0]}%  ({old[1]})" if old else "ยังไม่ทราบ").grid(row=i, column=2, sticky="w", **pad)
+        pct = old[0][0] if old else None
+        color = "#%02x%02x%02x" % level_color(pct) if pct is not None else MUTED
+
+        card = ctk.CTkFrame(body, fg_color=CARD, corner_radius=16, border_width=1, border_color=LINE)
+        card.pack(fill="x", pady=5)
+        card.grid_columnconfigure(1, weight=1)
+
+        badge = ctk.CTkFrame(card, width=46, height=46, corner_radius=12, fg_color=LINE)
+        badge.grid(row=0, column=0, rowspan=2, padx=(14, 12), pady=14)
+        badge.grid_propagate(False)
+        kind = kinds.get(dev["key"]) if not dev["key"].startswith("bt:") else None
+        ctk.CTkLabel(badge, text=GLYPH.get(kind, GLYPH[None]), font=("Segoe MDL2 Assets", 20),
+                     text_color=color).place(relx=0.5, rely=0.5, anchor="center")
+
+        name = ctk.StringVar(value=settings["names"].get(dev["key"], dev["name"]))
+        ctk.CTkEntry(card, textvariable=name, font=(TH, 14, "bold"), text_color=TEXT, fg_color=CARD,
+                     border_width=0, height=28).grid(row=0, column=1, sticky="ew", pady=(12, 0))
+        status = f"อัปเดต {old[1]}" if old else "ยังไม่ทราบค่า — ขยับ/กดปุ่มอุปกรณ์"
+        if old and old[0][1]:
+            status += "  ·  ⚡ กำลังชาร์จ"
+        ctk.CTkLabel(card, text=status, font=(TH, 12), text_color=MUTED).grid(row=1, column=1, sticky="w", padx=6)
+
+        ctk.CTkLabel(card, text=f"{pct}%" if pct is not None else "--", font=("Segoe UI", 26, "bold"),
+                     text_color=color).grid(row=0, column=2, rowspan=2, padx=(8, 6))
+        show = ctk.BooleanVar(value=dev["key"] not in settings["hidden"])
+        ctk.CTkSwitch(card, text="", variable=show, width=46, progress_color=ACCENT).grid(row=0, column=3, rowspan=2, padx=(4, 10))
+
+        bar = ctk.CTkProgressBar(card, height=6, corner_radius=3, fg_color=LINE, progress_color=color)
+        bar.set((pct or 0) / 100)
+        bar.grid(row=2, column=0, columnspan=4, sticky="ew", padx=14, pady=(0, 14))
         rows.append((dev, show, name))
 
-    r = len(devices) + 2
-    ttk.Separator(root).grid(row=r, column=0, columnspan=3, sticky="ew", pady=8)
-    ttk.Label(root, text="ทั่วไป", font=("Leelawadee UI", 11, "bold")).grid(row=r + 1, column=0, columnspan=3, sticky="w", padx=12)
-    startup = tk.BooleanVar(value=STARTUP_LNK.exists())
-    ttk.Checkbutton(root, text="เปิดพร้อม Windows", variable=startup).grid(row=r + 2, column=0, columnspan=3, sticky="w", **pad)
+    gen = ctk.CTkFrame(body, fg_color=CARD, corner_radius=16, border_width=1, border_color=LINE)
+    gen.pack(fill="x", pady=(14, 0))
+    gen.grid_columnconfigure(0, weight=1)
 
-    def combo(row, label, options, current):
-        ttk.Label(root, text=label).grid(row=row, column=0, columnspan=2, sticky="w", **pad)
-        var = tk.StringVar(value=next((k for k, v in options.items() if v == current), next(iter(options))))
-        ttk.Combobox(root, textvariable=var, values=list(options), state="readonly", width=14).grid(row=row, column=2, sticky="w", **pad)
+    def row_label(r, title, sub):
+        f = ctk.CTkFrame(gen, fg_color="transparent")
+        f.grid(row=r, column=0, sticky="w", padx=16, pady=10)
+        ctk.CTkLabel(f, text=title, font=(TH, 13, "bold"), text_color=TEXT).pack(anchor="w")
+        ctk.CTkLabel(f, text=sub, font=(TH, 12), text_color=MUTED).pack(anchor="w")
+
+    def segmented(r, options, current):
+        var = ctk.StringVar(value=next((k for k, v in options.items() if v == current), next(iter(options))))
+        ctk.CTkSegmentedButton(gen, values=list(options), variable=var, font=(TH, 12),
+                               selected_color=ACCENT, selected_hover_color="#3b74e0",
+                               unselected_color=LINE, fg_color=LINE).grid(row=r, column=1, padx=16, sticky="e")
         return var
 
-    interval = combo(r + 3, "อัปเดตค่าทุก", INTERVALS, settings["interval"])
-    alert = combo(r + 4, "แจ้งเตือนเมื่อแบต", ALERTS, settings["alert"])
+    row_label(0, "เปิดพร้อม Windows", "เริ่มทำงานเองทุกครั้งที่เปิดเครื่อง")
+    startup = ctk.BooleanVar(value=STARTUP_LNK.exists())
+    ctk.CTkSwitch(gen, text="", variable=startup, width=46, progress_color=ACCENT).grid(row=0, column=1, padx=16, sticky="e")
+    row_label(1, "อัปเดตค่าทุก", "ถี่ขึ้น = เห็นค่าใหม่เร็วขึ้น")
+    interval = segmented(1, {"30 วิ": 30, "1 นาที": 60, "5 นาที": 300, "15 นาที": 900}, settings["interval"])
+    row_label(2, "แจ้งเตือนแบตต่ำ", "เด้งแจ้งเตือนครั้งเดียวเมื่อแบตต่ำกว่าค่านี้")
+    alert = segmented(2, {"ปิด": 0, "10%": 10, "20%": 20, "30%": 30}, settings["alert"])
+
+    msg = ctk.CTkLabel(body, text="", font=(TH, 12), text_color="#ff6b6b")
+    msg.pack(anchor="w", pady=(8, 0))
 
     def save(*_):
         if not any(show.get() for _, show, _ in rows):
-            messagebox.showwarning("Battery Tray", "ต้องแสดงอย่างน้อย 1 อุปกรณ์\n(ไม่งั้นจะเปิดหน้าตั้งค่านี้ไม่ได้อีก)", parent=root)
+            msg.configure(text="ต้องเปิดแสดงอย่างน้อย 1 อุปกรณ์ ไม่งั้นจะกลับมาเปิดหน้านี้ไม่ได้")
             return
         settings["hidden"] = [d["key"] for d, show, _ in rows if not show.get()]
         settings["names"] = {d["key"]: n.get().strip() for d, _, n in rows
                              if n.get().strip() and n.get().strip() != d["name"]}
-        settings["interval"] = INTERVALS[interval.get()]
-        settings["alert"] = ALERTS[alert.get()]
+        settings["interval"] = {"30 วิ": 30, "1 นาที": 60, "5 นาที": 300, "15 นาที": 900}[interval.get()]
+        settings["alert"] = {"ปิด": 0, "10%": 10, "20%": 20, "30%": 30}[alert.get()]
         if startup.get() != STARTUP_LNK.exists():
             set_startup(startup.get())
         root.destroy()
         on_save()
 
-    bar = ttk.Frame(root)
-    bar.grid(row=r + 5, column=0, columnspan=3, sticky="e", padx=12, pady=12)
-    ttk.Button(bar, text="ยกเลิก", command=root.destroy).pack(side="right", padx=(6, 0))
-    ttk.Button(bar, text="บันทึก", command=save).pack(side="right")
+    bar = ctk.CTkFrame(body, fg_color="transparent")
+    bar.pack(fill="x", pady=(6, 0))
+    ctk.CTkButton(bar, text="บันทึก", font=(TH, 13, "bold"), height=38, corner_radius=10,
+                  fg_color=ACCENT, hover_color="#3b74e0", command=save).pack(side="right")
+    ctk.CTkButton(bar, text="ยกเลิก", font=(TH, 13), height=38, corner_radius=10, fg_color="transparent",
+                  border_width=1, border_color=LINE, hover_color=LINE, text_color=TEXT,
+                  command=root.destroy).pack(side="right", padx=(0, 8))
     root.bind("<Return>", save)
     root.bind("<Escape>", lambda _: root.destroy())
     root.mainloop()
@@ -332,7 +370,7 @@ def app():
 
         def run():
             try:
-                settings_window(devices, settings, last, on_save=wake.set)
+                settings_window(devices, settings, last, cache["kinds"], on_save=wake.set)
             finally:
                 settings_open.release()
         threading.Thread(target=run, daemon=True).start()
