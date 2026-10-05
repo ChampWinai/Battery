@@ -2,3 +2,6 @@
 *.pcapng
 battery_cache.json
 __pycache__/
+build/
+dist/
+*.spec

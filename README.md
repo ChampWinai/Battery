@@ -5,48 +5,55 @@
 ![tray](docs/tray.png)
 
 - ตัวเลขใหญ่ = % แบต, แถบล่าง = ระดับแบต (เขียว / ส้ม ≤40% / แดง ≤20%)
-- สายฟ้าสีเหลือง = กำลังชาร์จ
-- ตัวเลขสีเทา = ค่าล่าสุด (อุปกรณ์หลับอยู่)
-- ชี้เมาส์ค้างที่ไอคอนเพื่อดูชื่ออุปกรณ์ / คลิกขวา: ตั้งค่า, รีเฟรช, ค้นหาอุปกรณ์ใหม่, ปิด
+- สายฟ้าสีเหลือง = กำลังชาร์จ · ตัวเลขสีเทา = ค่าล่าสุด (อุปกรณ์หลับอยู่)
 - แจ้งเตือนเมื่อแบตต่ำ
+- ดับเบิลคลิกไอคอน = หน้าตั้งค่า · คลิกขวา = รีเฟรช, ค้นหาอุปกรณ์ใหม่, ปิด
 
-### หน้าตั้งค่า
+## ติดตั้ง (ง่ายสุด — ไม่ต้องมี Python)
 
-ดับเบิลคลิกที่ไอคอน (หรือคลิกขวา → ตั้งค่า) — เปิดเองครั้งแรกที่ใช้งาน
+1. ดาวน์โหลด **BatteryTray.exe** จากหน้า [Releases](../../releases/latest)
+2. วางไว้ในโฟลเดอร์ที่ไม่ลบทิ้ง (เช่น `Documents\BatteryTray`) แล้วดับเบิลคลิก
+3. หน้าตั้งค่าจะเปิดขึ้นเอง — เปิดสวิตช์ **เปิดพร้อม Windows** แล้วกดบันทึก
 
-- เลือกว่าจะแสดงไอคอนของอุปกรณ์ไหน และตั้งชื่อเรียกเอง
-- เปิด/ปิด "เปิดพร้อม Windows"
+Windows SmartScreen อาจเตือนเพราะไฟล์ไม่มีลายเซ็น — กด *More info → Run anyway*
+
+ถ้าไอคอนไปอยู่ใต้ลูกศร `^` ให้ลากออกมาวางบน taskbar หรือเปิด
+Settings → Personalization → Taskbar → Other system tray icons → เปิด **BatteryTray**
+
+### ติดตั้งจากซอร์ส
+
+ติดตั้ง [Python 3](https://www.python.org/downloads/) → ดาวน์โหลด repo → ดับเบิลคลิก `Install.bat`
+(เลิกใช้: `Uninstall.bat`, สร้าง exe เอง: `build.bat`)
+
+## หน้าตั้งค่า
+
+- เปิด/ปิดไอคอนของแต่ละอุปกรณ์ และตั้งชื่อเรียกเอง
+- เปิดพร้อม Windows
 - อัปเดตค่าทุก 30 วินาที / 1 / 5 / 15 นาที
 - แจ้งเตือนเมื่อแบต ≤ 10% / 20% / 30% หรือปิดแจ้งเตือน
 
-## ติดตั้ง
-
-1. ติดตั้ง [Python 3](https://www.python.org/downloads/) (ติ๊ก "Add python.exe to PATH")
-2. ดาวน์โหลด repo นี้ (Code → Download ZIP) แล้วแตกไฟล์ไว้ที่ไหนก็ได้
-3. ดับเบิลคลิก `Install.bat` — ติดตั้งไลบรารี, ตั้งให้เปิดเองตอนเปิดเครื่อง และเปิดแอปทันที
-
-ถ้าไอคอนไปอยู่ใต้ลูกศร `^` ให้ลากออกมาวางบน taskbar หรือเปิด
-Settings → Personalization → Taskbar → Other system tray icons → เปิด **Python**
-
-เลิกใช้: ดับเบิลคลิก `Uninstall.bat`
-
 ## อุปกรณ์ที่รองรับ
 
-| ชนิด | วิธีอ่าน | ทดสอบแล้ว |
+| ยี่ห้อ / ชนิด | วิธีอ่าน | สถานะ |
 |---|---|---|
-| เมาส์ที่ใช้ดองเกิล 2.4G Compx/ATK (VID `3554`) เช่น VXE, ATK | โปรโตคอลที่ ATK HUB ใช้ (ถอดจาก USB capture) | VXE R1 (`3554:f58e`) |
-| คีย์บอร์ดที่ใช้ดองเกิล Compx (VID `3554`) เช่น AULA | โปรโตคอล AULA จาก [womier-l65-linux](https://github.com/deepan-alve/womier-l65-linux) | Aula (`3554:fa09`) |
-| อุปกรณ์ Bluetooth ที่ Windows รู้ค่าแบต (หูฟัง/เมาส์/คีย์บอร์ด) | `DEVPKEY_Bluetooth_Battery` ของ Windows | ยังไม่ได้ทดสอบ |
+| เมาส์ดองเกิล 2.4G Compx/ATK (VID `3554`) — VXE, ATK ฯลฯ | โปรโตคอลที่ ATK HUB ใช้ (ถอดจาก USB capture) | ✅ ทดสอบกับ VXE R1 |
+| คีย์บอร์ดดองเกิล Compx (VID `3554`) — AULA ฯลฯ | โปรโตคอล AULA จาก [womier-l65-linux](https://github.com/deepan-alve/womier-l65-linux) | ✅ ทดสอบกับ Aula |
+| **Logitech** เมาส์ / คีย์บอร์ด / หูฟัง — Unifying, Bolt, Lightspeed, สาย | HID++ 2.0 (feature 0x1004 / 0x1000 / 0x1001) | 🧪 ยังไม่ได้ทดสอบกับของจริง |
+| **หูฟัง SteelSeries, Corsair, HyperX, Logitech, Roccat ฯลฯ** | [HeadsetControl](https://github.com/Sapd/HeadsetControl) — วาง `headsetcontrol.exe` ไว้ข้างโปรแกรม | 🧪 ยังไม่ได้ทดสอบกับของจริง |
+| อุปกรณ์ **Bluetooth** ทุกยี่ห้อที่ Windows รู้ค่าแบต | `DEVPKEY_Bluetooth_Battery` ของ Windows | 🧪 ยังไม่ได้ทดสอบกับของจริง |
 
-**ไม่รองรับ:** อุปกรณ์ที่ดองเกิลไม่ส่งค่าแบตมาให้คอม เช่น หูฟัง SIGNO WP-601 (`040b:0897`)
-และยี่ห้ออื่นที่ใช้โปรโตคอลเฉพาะของตัวเอง (Logitech, Razer, SteelSeries ฯลฯ — ใช้ HeadsetControl / โปรแกรมของยี่ห้อนั้น)
+รายชื่อหูฟังที่ HeadsetControl รองรับ: [ดูที่นี่](https://github.com/Sapd/HeadsetControl#supported-headsets)
 
-### เพิ่มอุปกรณ์ใหม่
+**ยังไม่รองรับ:** Razer, อุปกรณ์ที่ดองเกิลไม่ส่งค่าแบตมาให้คอม (เช่น หูฟัง SIGNO WP-601 `040b:0897`)
+
+ใช้แล้วเจอปัญหา หรือใช้ได้กับรุ่นไหน — แจ้งใน [Issues](../../issues) ได้เลย
+
+### เพิ่มยี่ห้อใหม่
 
 1. ติดตั้ง Wireshark + USBPcap
 2. อัด USB ตอนโปรแกรมของยี่ห้อนั้นกำลังแสดง % แบต
 3. หาคำสั่งที่ส่งออก (`URB_CONTROL out` / SET_REPORT) และคำตอบที่มีตัวเลขตรงกับ % ที่โปรแกรมแสดง
-4. เพิ่ม `*_frame` / `*_parse` ใน `PROTOCOLS` ของ `battery_monitor.py` และ VID ใน `COMPX_VIDS` (หรือเงื่อนไขใหม่ใน `discover`)
+4. เพิ่มฟังก์ชัน `*_devices()` ที่คืน `{key, kind, name, read}` แล้วใส่ใน `discover()` ของ `battery_monitor.py`
 
 ## ทดสอบ
 
@@ -54,7 +61,7 @@ Settings → Personalization → Taskbar → Other system tray icons → เป�
 py battery_monitor.py --test
 ```
 
-ตรวจเฟรมกับคำตอบจริงที่บันทึกไว้ แล้วพิมพ์ค่าแบตของอุปกรณ์ที่เสียบอยู่
+ตรวจเฟรมของทุกโปรโตคอลกับคำตอบจริง/จำลอง แล้วพิมพ์ค่าแบตของอุปกรณ์ที่เสียบอยู่
 
 ## License
 
