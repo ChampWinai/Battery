@@ -38,6 +38,32 @@ DATA_DIR = Path(os.environ.get("APPDATA", APP_DIR)) / "BatteryTray"
 CACHE = DATA_DIR / "battery_cache.json"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
+VERSION = "1.1.0"
+RELEASES_PAGE = "https://github.com/ChampWinai/Battery/releases/latest"
+RELEASES_API = "https://api.github.com/repos/ChampWinai/Battery/releases/latest"
+UPDATE_EVERY_S = 24 * 3600
+
+
+def latest_release():
+    """(tag, url) ของ Release ล่าสุดบน GitHub หรือ None ถ้าเช็คไม่ได้ (ออฟไลน์ ฯลฯ)"""
+    import urllib.request
+    try:
+        req = urllib.request.Request(RELEASES_API, headers={"User-Agent": "BatteryTray"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            d = json.load(r)
+        return d["tag_name"], d["html_url"]
+    except Exception:
+        return None
+
+
+def is_newer(tag, current):
+    def parse(v):
+        return tuple(int(x) for x in v.lstrip("vV").split(".") if x.isdigit())
+    try:
+        return parse(tag) > parse(current)
+    except ValueError:
+        return False
+
 
 # ---------- 1. ดองเกิล Compx ----------
 
@@ -598,7 +624,32 @@ def app():
         subprocess.Popen(launch_cmd(), cwd=APP_DIR)
         quit_all()
 
-    menu = pystray.Menu(pystray.MenuItem("ตั้งค่า...", open_settings, default=True),
+    update = {}
+
+    def check_update():
+        if time.time() - cache.get("update_checked", 0) < UPDATE_EVERY_S:
+            return
+        cache["update_checked"] = time.time()
+        save_cache(cache)
+        rel = latest_release()
+        if not rel or not is_newer(rel[0], VERSION):
+            return
+        update["tag"], update["url"] = rel
+        for icon in icons:
+            icon.update_menu()
+        if cache.get("update_notified") != rel[0]:
+            cache["update_notified"] = rel[0]
+            save_cache(cache)
+            icons[0].notify(f"Battery Tray {rel[0]} พร้อมให้ดาวน์โหลดแล้ว — คลิกขวาที่ไอคอน → ดาวน์โหลดเวอร์ชันใหม่",
+                            "มีเวอร์ชันใหม่")
+
+    def open_update(*_):
+        import webbrowser
+        webbrowser.open(update.get("url", RELEASES_PAGE))
+
+    menu = pystray.Menu(pystray.MenuItem(lambda _: f"ดาวน์โหลดเวอร์ชันใหม่ ({update.get('tag')})", open_update,
+                                         visible=lambda _: bool(update)),
+                        pystray.MenuItem("ตั้งค่า...", open_settings, default=True),
                         pystray.MenuItem("รีเฟรช", lambda *_: wake.set()),
                         pystray.MenuItem("ค้นหาอุปกรณ์ใหม่", rescan),
                         pystray.Menu.SEPARATOR,
@@ -614,6 +665,7 @@ def app():
         show_first = first_run
         while not stop.is_set():
             refresh()
+            check_update()
             if show_first:
                 show_first = False
                 open_settings()
@@ -625,6 +677,9 @@ def app():
 
 
 def test():
+    assert is_newer("v1.2.0", "1.1.0") and is_newer("v1.10.0", "1.9.0")
+    assert not is_newer("v1.1.0", "1.1.0") and not is_newer("v1.0.0", "1.1.0") and not is_newer("beta", "1.1.0")
+
     # Compx: คำตอบจริงจาก capture / อุปกรณ์
     assert mouse_frame().hex() == "0804000000000000000000000000000049"
     assert mouse_parse(bytes.fromhex("0804000000026400104c00000000000087")) == (100, False)
