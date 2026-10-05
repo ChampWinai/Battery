@@ -1,0 +1,4 @@
+*.pcap
+*.pcapng
+battery_cache.json
+__pycache__/
