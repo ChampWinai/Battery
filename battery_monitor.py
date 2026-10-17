@@ -345,6 +345,27 @@ def bt_devices():
     return [{"key": "bt:" + n, "kind": None, "name": n, "read": lambda n=n: read(n)} for n in bt_batteries()]
 
 
+# ---------- 5. อุปกรณ์ที่ไม่ส่งค่าแบต (แสดงแค่สถานะการเชื่อมต่อ) ----------
+
+# ดองเกิลไม่ส่งค่าแบตมาที่คอม (ตรวจแล้ว: ไม่มีใน HID และโปรแกรมของผู้ผลิตก็ไม่มีฟีเจอร์แบต)
+NO_BATTERY = {"040b:0897": ("หูฟัง SIGNO WP-601", "headset")}
+
+
+def present_usb_keys():
+    return {f"{d['vendor_id']:04x}:{d['product_id']:04x}" for d in hid.enumerate()}
+
+
+def nobattery_devices(cache):
+    """การ์ดสถานะการเชื่อมต่อ — แสดงเฉพาะรุ่นที่เคยเสียบในเครื่องนี้"""
+    seen = cache.setdefault("seen_nobat", [])
+    for key in present_usb_keys() & NO_BATTERY.keys():
+        if key not in seen:
+            seen.append(key)
+    return [{"key": "usb:" + key, "kind": NO_BATTERY[key][1], "name": NO_BATTERY[key][0], "no_battery": True,
+             "read": lambda: None, "connected": lambda k=key: k in present_usb_keys()}
+            for key in seen if key in NO_BATTERY]
+
+
 # ---------- อุปกรณ์ ----------
 
 def load_cache():
@@ -367,7 +388,7 @@ def discover(cache):
     """รวมอุปกรณ์จากทุกแหล่ง — คืนรายการ {key, kind, name, read}"""
     devices = []
     for source in (lambda: compx_devices(cache.setdefault("kinds", {})), lambda: logi_devices(cache),
-                   headset_devices, bt_devices):
+                   headset_devices, bt_devices, lambda: nobattery_devices(cache)):
         try:
             devices += source()
         except Exception:  # แหล่งใดพังไม่ควรทำให้แหล่งอื่นหาย
@@ -494,14 +515,42 @@ def settings_window(devices, settings, last, on_save):
                      text_color=C["text"]).pack(anchor="w", padx=18, pady=(16, 2))
         ctk.CTkLabel(empty, text="เสียบดองเกิล เปิดอุปกรณ์ แล้วคลิกขวาที่ไอคอน → ค้นหาอุปกรณ์ใหม่",
                      font=(TH, 13), text_color=C["sub"]).pack(anchor="w", padx=18, pady=(0, 16))
+    # ponytail: จำนวนการ์ดที่แสดงพร้อมกันประมาณจากความสูงจอ (ส่วนอื่นของหน้าต่าง ~600px, การ์ด ~128px)
+    MAX_CARDS = max(1, (root.winfo_screenheight() - 600) // 128)
+    devlist = (ctk.CTkScrollableFrame(body, height=MAX_CARDS * 128, fg_color=C["bg"])
+               if len(shown) > MAX_CARDS else ctk.CTkFrame(body, fg_color=C["bg"]))
+    devlist.pack(fill="x")
     for dev in shown:
+        if dev.get("no_battery"):
+            connected = dev["connected"]()
+            card = ctk.CTkFrame(devlist, fg_color=C["card"], corner_radius=16, border_width=1, border_color=C["line"])
+            card.pack(fill="x", pady=6)
+            card.grid_columnconfigure(1, weight=1)
+            badge = ctk.CTkFrame(card, width=48, height=48, corner_radius=12, fg_color=C["muted"])
+            badge.grid(row=0, column=0, rowspan=2, padx=(16, 12), pady=16)
+            badge.grid_propagate(False)
+            ctk.CTkLabel(badge, text=GLYPH.get(dev.get("kind"), GLYPH[None]), font=("Segoe MDL2 Assets", 20),
+                         text_color=C["text"] if connected else C["sub"]).place(relx=0.5, rely=0.5, anchor="center")
+            name = ctk.StringVar(value=settings["names"].get(dev["key"], dev["name"]))
+            entry = ctk.CTkEntry(card, textvariable=name, font=(TH, 15, "bold"), text_color=C["text"],
+                                 fg_color=C["card"], border_width=1, border_color=C["card"], corner_radius=8, height=32)
+            entry.grid(row=0, column=1, sticky="ew", pady=(14, 0))
+            focus_ring(entry)
+            pill = ctk.CTkFrame(card, fg_color=C["muted"], corner_radius=10)
+            pill.grid(row=1, column=1, sticky="w", padx=4, pady=(4, 14))
+            ctk.CTkLabel(pill, text="● เชื่อมต่ออยู่ · รุ่นนี้ไม่ส่งค่าแบต" if connected else "○ ไม่ได้เสียบดองเกิล",
+                         font=(TH, 12), text_color=C["accent"] if connected else C["sub"]).pack(padx=10, pady=1)
+            ctk.CTkLabel(card, text="—", font=("Segoe UI", 30, "bold"),
+                         text_color=C["sub"]).grid(row=0, column=2, rowspan=2, padx=(8, 16))
+            rows.append((dev, None, name))
+            continue
         old = last.get(dev["key"])
         stale = bool(dev.get("stale"))
         pct = old[0][0] if old else None
         status, scolor = status_of(old, stale)
         color = hexc(level_color(pct)) if pct is not None and not stale else C["sub"]
 
-        card = ctk.CTkFrame(body, fg_color=C["card"], corner_radius=16, border_width=1, border_color=C["line"])
+        card = ctk.CTkFrame(devlist, fg_color=C["card"], corner_radius=16, border_width=1, border_color=C["line"])
         card.pack(fill="x", pady=6)
         card.grid_columnconfigure(1, weight=1)
 
@@ -525,12 +574,12 @@ def settings_window(devices, settings, last, on_save):
 
         bar = ctk.CTkProgressBar(card, height=8, corner_radius=4, fg_color=C["muted"], progress_color=color)
         bar.set((pct or 0) / 100)
-        bar.grid(row=2, column=0, columnspan=3, sticky="ew", padx=16, pady=(10, 10))
+        bar.grid(row=2, column=0, columnspan=2, sticky="ew", padx=(16, 12), pady=(10, 14))
 
         show = ctk.BooleanVar(value=dev["key"] not in settings["hidden"])
-        ctk.CTkSwitch(card, text="แสดง % บนแถบงาน", variable=show, font=(TH, 12), text_color=C["sub"],
+        ctk.CTkSwitch(card, text="แสดงบนแถบงาน", variable=show, font=(TH, 12), text_color=C["sub"],
                       progress_color=C["accent"], button_color=C["text"], fg_color=C["border"],
-                      width=40).grid(row=3, column=0, columnspan=3, sticky="w", padx=16, pady=(0, 14))
+                      width=40).grid(row=2, column=2, sticky="e", padx=(0, 16), pady=(10, 14))
         rows.append((dev, show, name))
 
     # ---- ตั้งค่าทั่วไป ----
@@ -579,10 +628,11 @@ def settings_window(devices, settings, last, on_save):
     msg.pack(anchor="w", pady=(4, 0))
 
     def save(*_):
-        if rows and not any(show.get() for _, show, _ in rows):
+        switches = [show for _, show, _ in rows if show is not None]
+        if switches and not any(v.get() for v in switches):
             msg.configure(text="⚠ ต้องแสดงอย่างน้อย 1 อุปกรณ์ ไม่งั้นจะกลับมาเปิดหน้านี้ไม่ได้")
             return
-        settings["hidden"] = [d["key"] for d, show, _ in rows if not show.get()]
+        settings["hidden"] = [d["key"] for d, show, _ in rows if show is not None and not show.get()]
         settings["names"] = {d["key"]: n.get().strip() for d, _, n in rows
                              if n.get().strip() and n.get().strip() != d["name"]}
         settings["interval"] = intervals[interval.get()]
@@ -602,6 +652,12 @@ def settings_window(devices, settings, last, on_save):
                   cursor="hand2", command=root.destroy).pack(side="right", padx=(0, 10))
     root.bind("<Return>", save)
     root.bind("<Escape>", lambda _: root.destroy())
+
+    def center():
+        root.update_idletasks()
+        w, h = root.winfo_reqwidth(), root.winfo_reqheight()
+        root.geometry(f"+{max(0, (root.winfo_screenwidth() - w) // 2)}+{max(0, (root.winfo_screenheight() - h) // 2 - 30)}")
+    root.after(10, center)
     root.mainloop()
 
 
@@ -613,7 +669,9 @@ def app():
     settings = {**DEFAULTS, **cache.get("settings", {})}
     cache["settings"] = settings
     last = cache.setdefault("last", {})
-    devices = discover(cache) or [{"key": "none", "kind": None, "name": "ไม่พบอุปกรณ์ที่รองรับ", "read": lambda: None}]
+    all_devices = discover(cache)
+    devices = [d for d in all_devices if not d.get("no_battery")] or [
+        {"key": "none", "kind": None, "name": "ไม่พบอุปกรณ์ที่รองรับ", "read": lambda: None}]
     save_cache(cache)
     stop, wake, lock, settings_open = threading.Event(), threading.Event(), threading.Lock(), threading.Lock()
     alerted = set()
@@ -656,7 +714,7 @@ def app():
 
         def run():
             try:
-                settings_window(devices, settings, last, on_save=wake.set)
+                settings_window(all_devices, settings, last, on_save=wake.set)
             finally:
                 settings_open.release()
         threading.Thread(target=run, daemon=True).start()
@@ -731,6 +789,22 @@ def test():
     assert is_newer("v1.2.0", "1.1.0") and is_newer("v1.10.0", "1.9.0")
     assert not is_newer("v1.1.0", "1.1.0") and not is_newer("v1.0.0", "1.1.0") and not is_newer("beta", "1.1.0")
 
+    # อุปกรณ์ไม่ส่งค่าแบต: ขึ้นเมื่อเคยเสียบ, บอกสถานะเสียบ/ถอดถูกต้อง
+    global present_usb_keys
+    real_present = present_usb_keys
+    try:
+        present_usb_keys = lambda: set()  # noqa: E731
+        assert nobattery_devices({}) == []
+        present_usb_keys = lambda: {"040b:0897", "3554:f58e"}  # noqa: E731
+        c = {}
+        (hs,) = nobattery_devices(c)
+        assert hs["kind"] == "headset" and hs["connected"]() and c["seen_nobat"] == ["040b:0897"]
+        present_usb_keys = lambda: set()  # noqa: E731
+        (hs,) = nobattery_devices(c)
+        assert not hs["connected"]()
+    finally:
+        present_usb_keys = real_present
+
     # Compx: คำตอบจริงจาก capture / อุปกรณ์
     assert mouse_frame().hex() == "0804000000000000000000000000000049"
     assert mouse_parse(bytes.fromhex("0804000000026400104c00000000000087")) == (100, False)
@@ -775,8 +849,10 @@ def test():
 
     sys.stdout.reconfigure(encoding="utf-8")
     for dev in discover(load_cache()):
-        res = dev["read"]()
-        print(tooltip(dev["name"], res))
+        if dev.get("no_battery"):
+            print(f"{dev['name']}: " + ("เชื่อมต่ออยู่ (ไม่ส่งค่าแบต)" if dev["connected"]() else "ไม่ได้เสียบ"))
+            continue
+        print(tooltip(dev["name"], dev["read"]()))
 
 
 if __name__ == "__main__":
