@@ -378,7 +378,7 @@ def discover(cache):
 # ---------- ไอคอน ----------
 
 def level_color(pct):
-    return (230, 60, 60) if pct <= 20 else (245, 160, 30) if pct <= 40 else (70, 200, 110)
+    return (239, 68, 68) if pct <= 20 else (245, 158, 11) if pct <= 40 else (34, 197, 94)
 
 
 def make_icon(res, stale=False):
@@ -433,106 +433,154 @@ def set_startup(on):
 
 
 def settings_window(devices, settings, last, on_save):
-    """หน้าต่างตั้งค่า (customtkinter ใน thread ของตัวเอง)"""
+    """หน้าต่างตั้งค่า (customtkinter ใน thread ของตัวเอง)
+    ดีไซน์: ui-ux-pro-max — Dark slate + status green, สถานะมีข้อความกำกับ (ไม่ใช้สีอย่างเดียว)"""
     import webbrowser
 
     import customtkinter as ctk
 
-    BG, CARD, LINE = "#0e1014", "#171a21", "#232733"
-    TEXT, MUTED, ACCENT = "#eef0f4", "#8a90a0", "#4f8cff"
+    C = {"bg": "#0F172A", "card": "#1B2336", "muted": "#272F42", "line": "#2B3548", "border": "#475569",
+         "text": "#F8FAFC", "sub": "#94A3B8", "accent": "#22C55E", "on_accent": "#0F172A",
+         "accent_hover": "#16A34A", "danger": "#EF4444"}
     TH = "Leelawadee UI"
     GLYPH = {"mouse": "", "keyboard": "", "headset": "", None: ""}  # Segoe MDL2 Assets
 
+    def hexc(rgb):
+        return "#%02x%02x%02x" % rgb
+
+    def status_of(old, stale):
+        """(ข้อความ, สี) — ข้อความกำกับเสมอ ไม่พึ่งสีอย่างเดียว"""
+        if not old:
+            return "ยังไม่ทราบค่า", C["sub"]
+        pct, chg = old[0]
+        if stale:
+            return f"หลับอยู่ · ค่าล่าสุด {old[1]}", C["sub"]
+        if chg:
+            return "⚡ กำลังชาร์จ", C["accent"]
+        if pct <= 20:
+            return "วิกฤต · ควรชาร์จ", hexc(level_color(pct))
+        if pct <= 40:
+            return "ต่ำ", hexc(level_color(pct))
+        return "ปกติ", hexc(level_color(pct))
+
+    def focus_ring(entry):
+        entry.bind("<FocusIn>", lambda _: entry.configure(border_color=C["accent"]))
+        entry.bind("<FocusOut>", lambda _: entry.configure(border_color=C["card"]))
+
     ctk.set_appearance_mode("dark")
-    root = ctk.CTk(fg_color=BG)
+    root = ctk.CTk(fg_color=C["bg"])
     root.title("Battery Tray")
     root.resizable(False, False)
     root.attributes("-topmost", True)
-    body = ctk.CTkFrame(root, fg_color=BG)
-    body.pack(padx=22, pady=20, fill="both")
+    body = ctk.CTkFrame(root, fg_color=C["bg"])
+    body.pack(padx=24, pady=22, fill="both")
 
-    ctk.CTkLabel(body, text="Battery Tray", font=(TH, 22, "bold"), text_color=TEXT).pack(anchor="w")
-    ctk.CTkLabel(body, text="แบตเตอรี่อุปกรณ์ไร้สายของคุณ", font=(TH, 12), text_color=MUTED).pack(anchor="w", pady=(0, 14))
+    # ---- ส่วนหัว: ชื่อแอป + สรุปภาพรวม ----
+    shown = [d for d in devices if d["key"] != "none"]
+    known = [last[d["key"]][0][0] for d in shown if d["key"] in last]
+    head = ctk.CTkFrame(body, fg_color="transparent")
+    head.pack(fill="x")
+    ctk.CTkLabel(head, text="Battery Tray", font=(TH, 24, "bold"), text_color=C["text"]).pack(side="left")
+    ctk.CTkLabel(head, text=f"v{VERSION}", font=(TH, 12), text_color=C["sub"]).pack(side="left", padx=8, pady=(8, 0))
+    summary = f"{len(shown)} อุปกรณ์" + (f"  ·  ต่ำสุด {min(known)}%" if known else "")
+    ctk.CTkLabel(body, text=summary, font=(TH, 13), text_color=C["sub"]).pack(anchor="w", pady=(0, 16))
 
+    # ---- การ์ดอุปกรณ์ ----
     rows = []
-    if not [d for d in devices if d["key"] != "none"]:
-        ctk.CTkLabel(body, text="ยังไม่พบอุปกรณ์ที่รองรับ\nเสียบดองเกิล เปิดอุปกรณ์ แล้วคลิกขวาที่ไอคอน → ค้นหาอุปกรณ์ใหม่",
-                     font=(TH, 13), text_color=MUTED, justify="left").pack(anchor="w", pady=8)
-    for dev in devices:
-        if dev["key"] == "none":
-            continue
+    if not shown:
+        empty = ctk.CTkFrame(body, fg_color=C["card"], corner_radius=16)
+        empty.pack(fill="x", pady=6)
+        ctk.CTkLabel(empty, text="ยังไม่พบอุปกรณ์ที่รองรับ", font=(TH, 15, "bold"),
+                     text_color=C["text"]).pack(anchor="w", padx=18, pady=(16, 2))
+        ctk.CTkLabel(empty, text="เสียบดองเกิล เปิดอุปกรณ์ แล้วคลิกขวาที่ไอคอน → ค้นหาอุปกรณ์ใหม่",
+                     font=(TH, 13), text_color=C["sub"]).pack(anchor="w", padx=18, pady=(0, 16))
+    for dev in shown:
         old = last.get(dev["key"])
+        stale = bool(dev.get("stale"))
         pct = old[0][0] if old else None
-        color = "#%02x%02x%02x" % level_color(pct) if pct is not None else MUTED
+        status, scolor = status_of(old, stale)
+        color = hexc(level_color(pct)) if pct is not None and not stale else C["sub"]
 
-        card = ctk.CTkFrame(body, fg_color=CARD, corner_radius=16, border_width=1, border_color=LINE)
-        card.pack(fill="x", pady=5)
+        card = ctk.CTkFrame(body, fg_color=C["card"], corner_radius=16, border_width=1, border_color=C["line"])
+        card.pack(fill="x", pady=6)
         card.grid_columnconfigure(1, weight=1)
 
-        badge = ctk.CTkFrame(card, width=46, height=46, corner_radius=12, fg_color=LINE)
-        badge.grid(row=0, column=0, rowspan=2, padx=(14, 12), pady=14)
+        badge = ctk.CTkFrame(card, width=48, height=48, corner_radius=12, fg_color=C["muted"])
+        badge.grid(row=0, column=0, rowspan=2, padx=(16, 12), pady=(16, 8))
         badge.grid_propagate(False)
         ctk.CTkLabel(badge, text=GLYPH.get(dev.get("kind"), GLYPH[None]), font=("Segoe MDL2 Assets", 20),
                      text_color=color).place(relx=0.5, rely=0.5, anchor="center")
 
         name = ctk.StringVar(value=settings["names"].get(dev["key"], dev["name"]))
-        ctk.CTkEntry(card, textvariable=name, font=(TH, 14, "bold"), text_color=TEXT, fg_color=CARD,
-                     border_width=0, height=28).grid(row=0, column=1, sticky="ew", pady=(12, 0))
-        status = f"อัปเดต {old[1]}" if old else "ยังไม่ทราบค่า — ขยับ/กดปุ่มอุปกรณ์"
-        if old and old[0][1]:
-            status += "  ·  ⚡ กำลังชาร์จ"
-        ctk.CTkLabel(card, text=status, font=(TH, 12), text_color=MUTED).grid(row=1, column=1, sticky="w", padx=6)
+        entry = ctk.CTkEntry(card, textvariable=name, font=(TH, 15, "bold"), text_color=C["text"],
+                             fg_color=C["card"], border_width=1, border_color=C["card"], corner_radius=8, height=32)
+        entry.grid(row=0, column=1, sticky="ew", pady=(14, 0))
+        focus_ring(entry)
+        pill = ctk.CTkFrame(card, fg_color=C["muted"], corner_radius=10)
+        pill.grid(row=1, column=1, sticky="w", padx=4, pady=(4, 0))
+        ctk.CTkLabel(pill, text=status, font=(TH, 12), text_color=scolor).pack(padx=10, pady=1)
 
-        ctk.CTkLabel(card, text=f"{pct}%" if pct is not None else "--", font=("Segoe UI", 26, "bold"),
-                     text_color=color).grid(row=0, column=2, rowspan=2, padx=(8, 6))
-        show = ctk.BooleanVar(value=dev["key"] not in settings["hidden"])
-        ctk.CTkSwitch(card, text="", variable=show, width=46, progress_color=ACCENT).grid(row=0, column=3, rowspan=2, padx=(4, 10))
+        ctk.CTkLabel(card, text=f"{pct}%" if pct is not None else "--", font=("Segoe UI", 30, "bold"),
+                     text_color=color).grid(row=0, column=2, rowspan=2, padx=(8, 16))
 
-        bar = ctk.CTkProgressBar(card, height=6, corner_radius=3, fg_color=LINE, progress_color=color)
+        bar = ctk.CTkProgressBar(card, height=8, corner_radius=4, fg_color=C["muted"], progress_color=color)
         bar.set((pct or 0) / 100)
-        bar.grid(row=2, column=0, columnspan=4, sticky="ew", padx=14, pady=(0, 14))
+        bar.grid(row=2, column=0, columnspan=3, sticky="ew", padx=16, pady=(10, 10))
+
+        show = ctk.BooleanVar(value=dev["key"] not in settings["hidden"])
+        ctk.CTkSwitch(card, text="แสดง % บนแถบงาน", variable=show, font=(TH, 12), text_color=C["sub"],
+                      progress_color=C["accent"], button_color=C["text"], fg_color=C["border"],
+                      width=40).grid(row=3, column=0, columnspan=3, sticky="w", padx=16, pady=(0, 14))
         rows.append((dev, show, name))
 
-    gen = ctk.CTkFrame(body, fg_color=CARD, corner_radius=16, border_width=1, border_color=LINE)
-    gen.pack(fill="x", pady=(14, 0))
+    # ---- ตั้งค่าทั่วไป ----
+    ctk.CTkLabel(body, text="การตั้งค่า", font=(TH, 14, "bold"), text_color=C["text"]).pack(anchor="w", pady=(18, 6))
+    gen = ctk.CTkFrame(body, fg_color=C["card"], corner_radius=16, border_width=1, border_color=C["line"])
+    gen.pack(fill="x")
     gen.grid_columnconfigure(0, weight=1)
 
     def row_label(r, title, sub):
         f = ctk.CTkFrame(gen, fg_color="transparent")
-        f.grid(row=r, column=0, sticky="w", padx=16, pady=10)
-        ctk.CTkLabel(f, text=title, font=(TH, 13, "bold"), text_color=TEXT).pack(anchor="w")
-        ctk.CTkLabel(f, text=sub, font=(TH, 12), text_color=MUTED).pack(anchor="w")
+        f.grid(row=r, column=0, sticky="w", padx=18, pady=12)
+        ctk.CTkLabel(f, text=title, font=(TH, 14, "bold"), text_color=C["text"]).pack(anchor="w")
+        ctk.CTkLabel(f, text=sub, font=(TH, 12), text_color=C["sub"]).pack(anchor="w")
+
+    def divider(r):
+        ctk.CTkFrame(gen, height=1, fg_color=C["line"]).grid(row=r, column=0, columnspan=2, sticky="ew", padx=18)
 
     def segmented(r, options, current):
         var = ctk.StringVar(value=next((k for k, v in options.items() if v == current), next(iter(options))))
-        ctk.CTkSegmentedButton(gen, values=list(options), variable=var, font=(TH, 12),
-                               selected_color=ACCENT, selected_hover_color="#3b74e0",
-                               unselected_color=LINE, fg_color=LINE).grid(row=r, column=1, padx=16, sticky="e")
+        ctk.CTkSegmentedButton(gen, values=list(options), variable=var, font=(TH, 12), height=32,
+                               selected_color=C["accent"], selected_hover_color=C["accent_hover"],
+                               unselected_color=C["muted"], unselected_hover_color=C["line"],
+                               fg_color=C["muted"], text_color=C["text"]).grid(row=r, column=1, padx=18, sticky="e")
         return var
 
     intervals = {"30 วิ": 30, "1 นาที": 60, "5 นาที": 300, "15 นาที": 900}
     alerts = {"ปิด": 0, "10%": 10, "20%": 20, "30%": 30}
     row_label(0, "เปิดพร้อม Windows", "เริ่มทำงานเองทุกครั้งที่เปิดเครื่อง")
     startup = ctk.BooleanVar(value=STARTUP_LNK.exists())
-    ctk.CTkSwitch(gen, text="", variable=startup, width=46, progress_color=ACCENT).grid(row=0, column=1, padx=16, sticky="e")
-    row_label(1, "อัปเดตค่าทุก", "ถี่ขึ้น = เห็นค่าใหม่เร็วขึ้น")
-    interval = segmented(1, intervals, settings["interval"])
-    row_label(2, "แจ้งเตือนแบตต่ำ", "เด้งแจ้งเตือนครั้งเดียวเมื่อแบตต่ำกว่าค่านี้")
-    alert = segmented(2, alerts, settings["alert"])
+    ctk.CTkSwitch(gen, text="", variable=startup, width=40, progress_color=C["accent"], button_color=C["text"],
+                  fg_color=C["border"]).grid(row=0, column=1, padx=18, sticky="e")
+    divider(1)
+    row_label(2, "อัปเดตค่าทุก", "ถี่ขึ้น = เห็นค่าใหม่เร็วขึ้น")
+    interval = segmented(2, intervals, settings["interval"])
+    divider(3)
+    row_label(4, "แจ้งเตือนแบตต่ำ", "เด้งแจ้งเตือนครั้งเดียวเมื่อแบตต่ำกว่าค่านี้")
+    alert = segmented(4, alerts, settings["alert"])
 
     if not headsetcontrol_exe():
-        hint = ctk.CTkLabel(body, text="หูฟัง SteelSeries / Corsair / HyperX / Logitech?  วาง headsetcontrol.exe "
-                                       "ไว้ข้างโปรแกรมนี้ แล้วค้นหาอุปกรณ์ใหม่  ↗",
-                            font=(TH, 12), text_color=ACCENT, cursor="hand2", wraplength=420, justify="left")
-        hint.pack(anchor="w", pady=(10, 0))
+        hint = ctk.CTkLabel(body, text="ใช้หูฟัง SteelSeries / Corsair / HyperX?  ดาวน์โหลด HeadsetControl ↗",
+                            font=(TH, 12), text_color=C["accent"], cursor="hand2")
+        hint.pack(anchor="w", pady=(12, 0))
         hint.bind("<Button-1>", lambda _: webbrowser.open(HEADSETCONTROL_URL))
 
-    msg = ctk.CTkLabel(body, text="", font=(TH, 12), text_color="#ff6b6b")
+    msg = ctk.CTkLabel(body, text="", font=(TH, 12), text_color=C["danger"])
     msg.pack(anchor="w", pady=(4, 0))
 
     def save(*_):
         if rows and not any(show.get() for _, show, _ in rows):
-            msg.configure(text="ต้องเปิดแสดงอย่างน้อย 1 อุปกรณ์ ไม่งั้นจะกลับมาเปิดหน้านี้ไม่ได้")
+            msg.configure(text="⚠ ต้องแสดงอย่างน้อย 1 อุปกรณ์ ไม่งั้นจะกลับมาเปิดหน้านี้ไม่ได้")
             return
         settings["hidden"] = [d["key"] for d, show, _ in rows if not show.get()]
         settings["names"] = {d["key"]: n.get().strip() for d, _, n in rows
@@ -545,12 +593,13 @@ def settings_window(devices, settings, last, on_save):
         on_save()
 
     bar = ctk.CTkFrame(body, fg_color="transparent")
-    bar.pack(fill="x", pady=(6, 0))
-    ctk.CTkButton(bar, text="บันทึก", font=(TH, 13, "bold"), height=38, corner_radius=10,
-                  fg_color=ACCENT, hover_color="#3b74e0", command=save).pack(side="right")
-    ctk.CTkButton(bar, text="ยกเลิก", font=(TH, 13), height=38, corner_radius=10, fg_color="transparent",
-                  border_width=1, border_color=LINE, hover_color=LINE, text_color=TEXT,
-                  command=root.destroy).pack(side="right", padx=(0, 8))
+    bar.pack(fill="x", pady=(8, 0))
+    ctk.CTkButton(bar, text="บันทึก", font=(TH, 14, "bold"), height=42, width=120, corner_radius=10,
+                  fg_color=C["accent"], hover_color=C["accent_hover"], text_color=C["on_accent"],
+                  cursor="hand2", command=save).pack(side="right")
+    ctk.CTkButton(bar, text="ยกเลิก", font=(TH, 14), height=42, width=100, corner_radius=10, fg_color="transparent",
+                  border_width=1, border_color=C["border"], hover_color=C["muted"], text_color=C["text"],
+                  cursor="hand2", command=root.destroy).pack(side="right", padx=(0, 10))
     root.bind("<Return>", save)
     root.bind("<Escape>", lambda _: root.destroy())
     root.mainloop()
@@ -583,6 +632,7 @@ def app():
                     res = None
                 name = label(dev)
                 if res:
+                    dev["stale"] = False
                     last[dev["key"]] = [list(res), time.strftime("%d/%m %H:%M")]
                     icon.icon, icon.title = make_icon(res), tooltip(name, res)
                     low = bool(settings["alert"]) and res[0] <= settings["alert"] and not res[1]
@@ -592,6 +642,7 @@ def app():
                     elif not low:
                         alerted.discard(dev["key"])
                 elif dev["key"] in last:
+                    dev["stale"] = True
                     old, at = last[dev["key"]]
                     icon.icon = make_icon(old, stale=True)
                     icon.title = f"{name}: {old[0]}% (ค่าล่าสุด {at}, ตอนนี้หลับอยู่)"
