@@ -38,7 +38,7 @@ DATA_DIR = Path(os.environ.get("APPDATA", APP_DIR)) / "BatteryTray"
 CACHE = DATA_DIR / "battery_cache.json"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 RELEASES_PAGE = "https://github.com/ChampWinai/Battery/releases/latest"
 RELEASES_API = "https://api.github.com/repos/ChampWinai/Battery/releases/latest"
 UPDATE_EVERY_S = 24 * 3600
@@ -481,16 +481,86 @@ def make_icon(res, stale=False):
     return img
 
 
-def tooltip(name, res):
+def tooltip(name, res, eta=None):
     if not isinstance(res, (tuple, list)):
         return f"{name}: หลับอยู่ (ขยับ/กดปุ่มแล้วรีเฟรช)"
-    return f"{name}: {res[0]}%" + (" กำลังชาร์จ" if res[1] else "")
+    return f"{name}: {res[0]}%" + (" กำลังชาร์จ" if res[1] else "") + (f" · เหลือ {eta}" if eta else "")
+
+
+# ---------- ประวัติแบต + ประมาณเวลาที่เหลือ ----------
+
+HISTORY_DAYS = 7
+MIN_SPAN_H, MIN_DROP = 2, 3  # ต้องมีข้อมูลอย่างน้อย 2 ชม. และแบตลด ≥3% ถึงจะประมาณ (กันตัวเลขมั่ว)
+
+
+def record_history(hist, ts, pct, charging):
+    """เก็บ [ts, pct, charging] เมื่อค่าเปลี่ยน หรือทุก 30 นาที — เก็บย้อนหลัง 7 วัน"""
+    if not hist or hist[-1][1] != pct or hist[-1][2] != bool(charging) or ts - hist[-1][0] >= 1800:
+        hist.append([ts, pct, bool(charging)])
+    cutoff = ts - HISTORY_DAYS * 86400
+    while hist and hist[0][0] < cutoff:
+        hist.pop(0)
+
+
+def estimate_remaining_h(hist, now):
+    """ชั่วโมงที่เหลือจากอัตราลดของช่วงคายประจุล่าสุด (ตั้งแต่ชาร์จครั้งก่อน) หรือ None ถ้าข้อมูลยังไม่พอ"""
+    seg = []
+    for ts, pct, chg in reversed(hist):
+        if chg or (seg and pct < seg[-1][1]):  # เจอช่วงชาร์จ / แบตเพิ่มขึ้น = จบช่วงคายประจุ
+            break
+        seg.append((ts, pct))
+    if len(seg) < 2:
+        return None
+    (t1, p1), (t0, p0) = seg[0], seg[-1]
+    span_h, drop = (t1 - t0) / 3600, p0 - p1
+    if span_h < MIN_SPAN_H or drop < MIN_DROP:
+        return None
+    return max(0.0, p1 / (drop / span_h) - (now - t1) / 3600)
+
+
+def fmt_remaining(h):
+    if h is None:
+        return None
+    if h < 1:
+        return "ไม่ถึง 1 ชม."
+    return f"~{round(h)} ชม." if h < 48 else f"~{round(h / 24)} วัน"
+
+
+# ---------- ติดตั้งไว้ที่ถาวร ----------
+
+INSTALL_DIR = Path(os.environ.get("LOCALAPPDATA", str(DATA_DIR))) / "BatteryTray"
+
+
+def needs_install():
+    return FROZEN and Path(sys.executable).resolve().parent != INSTALL_DIR.resolve()
+
+
+def is_running(exe):
+    """exe ที่กำลังรันเปิดเพื่อเขียนไม่ได้บน Windows"""
+    try:
+        with open(exe, "r+b"):
+            return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def install_copy(src, dest):
+    """คัดลอก src ไปที่ dest (แทนตัวเดิมถ้ามี โดยคืนตัวเดิมถ้าล้มเหลว)"""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.exists():
+        shutil.copy2(src, dest)
+        return
+    new = dest.with_name(dest.name + ".new")
+    shutil.copy2(src, new)
+    swap_exe(dest, new)
 
 
 # ---------- ตั้งค่า ----------
 
 STARTUP_LNK = Path(os.environ.get("APPDATA", "")) / r"Microsoft\Windows\Start Menu\Programs\Startup\Battery Tray.lnk"
-DEFAULTS = {"interval": 60, "alert": 20, "hidden": [], "names": {}}
+DEFAULTS = {"interval": 60, "alert": 20, "hidden": [], "names": {}, "notify_full": True}
 
 
 def launch_cmd():
@@ -509,20 +579,32 @@ def relaunch_env():
     return env
 
 
-def set_startup(on):
+def set_startup(on, exe=None):
     if not on:
         STARTUP_LNK.unlink(missing_ok=True)
         return
-    target, *args = launch_cmd()
+    target, *args = [str(exe)] if exe else launch_cmd()
     ps = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:LNK);"
           "$s.TargetPath=$env:TARGET; $s.Arguments=$env:ARGS;"
           "$s.WorkingDirectory=$env:DIR; $s.Description='Battery Tray'; $s.Save()")
-    env = dict(os.environ, LNK=str(STARTUP_LNK), TARGET=target, DIR=str(APP_DIR),
+    env = dict(os.environ, LNK=str(STARTUP_LNK), TARGET=target, DIR=str(Path(exe).parent if exe else APP_DIR),
                ARGS=" ".join(f'"{a}"' for a in args))
     subprocess.run(["powershell", "-NoProfile", "-Command", ps], env=env, creationflags=NO_WINDOW)
 
 
-def settings_window(devices, settings, last, on_save):
+def work_area_height(root):
+    """ความสูงจอที่ใช้ได้จริง (หัก taskbar) — fallback เป็นความสูงจอ"""
+    try:
+        import ctypes
+        r = (ctypes.c_long * 4)()
+        if ctypes.windll.user32.SystemParametersInfoW(0x30, 0, r, 0):  # SPI_GETWORKAREA
+            return r[3] - r[1]
+    except Exception:
+        pass
+    return root.winfo_screenheight()
+
+
+def settings_window(devices, settings, last, on_save, history=None):
     """หน้าต่างตั้งค่า (customtkinter ใน thread ของตัวเอง)
     ดีไซน์: ui-ux-pro-max — Dark slate + status green, สถานะมีข้อความกำกับ (ไม่ใช้สีอย่างเดียว)"""
     import webbrowser
@@ -563,7 +645,7 @@ def settings_window(devices, settings, last, on_save):
     root.resizable(False, False)
     root.attributes("-topmost", True)
     body = ctk.CTkFrame(root, fg_color=C["bg"])
-    body.pack(padx=24, pady=22, fill="both")
+    body.pack(padx=24, pady=16, fill="both")
 
     # ---- ส่วนหัว: ชื่อแอป + สรุปภาพรวม ----
     shown = [d for d in devices if d["key"] != "none"]
@@ -573,7 +655,7 @@ def settings_window(devices, settings, last, on_save):
     ctk.CTkLabel(head, text="Battery Tray", font=(TH, 24, "bold"), text_color=C["text"]).pack(side="left")
     ctk.CTkLabel(head, text=f"v{VERSION}", font=(TH, 12), text_color=C["sub"]).pack(side="left", padx=8, pady=(8, 0))
     summary = f"{len(shown)} อุปกรณ์" + (f"  ·  ต่ำสุด {min(known)}%" if known else "")
-    ctk.CTkLabel(body, text=summary, font=(TH, 13), text_color=C["sub"]).pack(anchor="w", pady=(0, 16))
+    ctk.CTkLabel(body, text=summary, font=(TH, 13), text_color=C["sub"]).pack(anchor="w", pady=(0, 10))
 
     # ---- การ์ดอุปกรณ์ ----
     rows = []
@@ -585,7 +667,7 @@ def settings_window(devices, settings, last, on_save):
         ctk.CTkLabel(empty, text="เสียบดองเกิล เปิดอุปกรณ์ แล้วคลิกขวาที่ไอคอน → ค้นหาอุปกรณ์ใหม่",
                      font=(TH, 13), text_color=C["sub"]).pack(anchor="w", padx=18, pady=(0, 16))
     # ponytail: จำนวนการ์ดที่แสดงพร้อมกันประมาณจากความสูงจอ (ส่วนอื่นของหน้าต่าง ~600px, การ์ด ~128px)
-    MAX_CARDS = max(1, (root.winfo_screenheight() - 600) // 128)
+    MAX_CARDS = max(1, (work_area_height(root) - 600) // 128)
     devlist = (ctk.CTkScrollableFrame(body, height=MAX_CARDS * 128, fg_color=C["bg"])
                if len(shown) > MAX_CARDS else ctk.CTkFrame(body, fg_color=C["bg"]))
     devlist.pack(fill="x")
@@ -593,7 +675,7 @@ def settings_window(devices, settings, last, on_save):
         if dev.get("no_battery"):
             connected = dev["connected"]()
             card = ctk.CTkFrame(devlist, fg_color=C["card"], corner_radius=16, border_width=1, border_color=C["line"])
-            card.pack(fill="x", pady=6)
+            card.pack(fill="x", pady=4)
             card.grid_columnconfigure(1, weight=1)
             badge = ctk.CTkFrame(card, width=48, height=48, corner_radius=12, fg_color=C["muted"])
             badge.grid(row=0, column=0, rowspan=2, padx=(16, 12), pady=16)
@@ -617,10 +699,13 @@ def settings_window(devices, settings, last, on_save):
         stale = bool(dev.get("stale"))
         pct = old[0][0] if old else None
         status, scolor = status_of(old, stale)
+        eta = fmt_remaining(estimate_remaining_h((history or {}).get(dev["key"], []), time.time()))
+        if eta and old and not stale and not old[0][1]:
+            status += f" · เหลือ {eta}"
         color = hexc(level_color(pct)) if pct is not None and not stale else C["sub"]
 
         card = ctk.CTkFrame(devlist, fg_color=C["card"], corner_radius=16, border_width=1, border_color=C["line"])
-        card.pack(fill="x", pady=6)
+        card.pack(fill="x", pady=4)
         card.grid_columnconfigure(1, weight=1)
 
         badge = ctk.CTkFrame(card, width=48, height=48, corner_radius=12, fg_color=C["muted"])
@@ -652,14 +737,14 @@ def settings_window(devices, settings, last, on_save):
         rows.append((dev, show, name))
 
     # ---- ตั้งค่าทั่วไป ----
-    ctk.CTkLabel(body, text="การตั้งค่า", font=(TH, 14, "bold"), text_color=C["text"]).pack(anchor="w", pady=(18, 6))
+    ctk.CTkLabel(body, text="การตั้งค่า", font=(TH, 14, "bold"), text_color=C["text"]).pack(anchor="w", pady=(12, 6))
     gen = ctk.CTkFrame(body, fg_color=C["card"], corner_radius=16, border_width=1, border_color=C["line"])
     gen.pack(fill="x")
     gen.grid_columnconfigure(0, weight=1)
 
     def row_label(r, title, sub):
         f = ctk.CTkFrame(gen, fg_color="transparent")
-        f.grid(row=r, column=0, sticky="w", padx=18, pady=12)
+        f.grid(row=r, column=0, sticky="w", padx=18, pady=8)
         ctk.CTkLabel(f, text=title, font=(TH, 14, "bold"), text_color=C["text"]).pack(anchor="w")
         ctk.CTkLabel(f, text=sub, font=(TH, 12), text_color=C["sub"]).pack(anchor="w")
 
@@ -686,33 +771,39 @@ def settings_window(devices, settings, last, on_save):
     divider(3)
     row_label(4, "แจ้งเตือนแบตต่ำ", "เด้งแจ้งเตือนครั้งเดียวเมื่อแบตต่ำกว่าค่านี้")
     alert = segmented(4, alerts, settings["alert"])
+    divider(5)
+    row_label(6, "แจ้งเตือนชาร์จเต็ม", "สำหรับอุปกรณ์ที่บอกสถานะการชาร์จ")
+    notify_full = ctk.BooleanVar(value=settings.get("notify_full", True))
+    ctk.CTkSwitch(gen, text="", variable=notify_full, width=40, progress_color=C["accent"], button_color=C["text"],
+                  fg_color=C["border"]).grid(row=6, column=1, padx=18, sticky="e")
 
     if not headsetcontrol_exe():
         hint = ctk.CTkLabel(body, text="ใช้หูฟัง SteelSeries / Corsair / HyperX?  ดาวน์โหลด HeadsetControl ↗",
                             font=(TH, 12), text_color=C["accent"], cursor="hand2")
-        hint.pack(anchor="w", pady=(12, 0))
+        hint.pack(anchor="w", pady=(8, 0))
         hint.bind("<Button-1>", lambda _: webbrowser.open(HEADSETCONTROL_URL))
 
-    msg = ctk.CTkLabel(body, text="", font=(TH, 12), text_color=C["danger"])
-    msg.pack(anchor="w", pady=(4, 0))
+    msg = ctk.CTkLabel(body, text="", font=(TH, 12), text_color=C["danger"])  # pack เมื่อมี error เท่านั้น
 
     def save(*_):
         switches = [show for _, show, _ in rows if show is not None]
         if switches and not any(v.get() for v in switches):
             msg.configure(text="⚠ ต้องแสดงอย่างน้อย 1 อุปกรณ์ ไม่งั้นจะกลับมาเปิดหน้านี้ไม่ได้")
+            msg.pack(anchor="w", pady=(4, 0), before=bar)
             return
         settings["hidden"] = [d["key"] for d, show, _ in rows if show is not None and not show.get()]
         settings["names"] = {d["key"]: n.get().strip() for d, _, n in rows
                              if n.get().strip() and n.get().strip() != d["name"]}
         settings["interval"] = intervals[interval.get()]
         settings["alert"] = alerts[alert.get()]
+        settings["notify_full"] = notify_full.get()
         if startup.get() != STARTUP_LNK.exists():
             set_startup(startup.get())
         root.destroy()
         on_save()
 
     bar = ctk.CTkFrame(body, fg_color="transparent")
-    bar.pack(fill="x", pady=(8, 0))
+    bar.pack(fill="x", pady=(12, 0))
     ctk.CTkButton(bar, text="บันทึก", font=(TH, 14, "bold"), height=42, width=120, corner_radius=10,
                   fg_color=C["accent"], hover_color=C["accent_hover"], text_color=C["on_accent"],
                   cursor="hand2", command=save).pack(side="right")
@@ -725,14 +816,35 @@ def settings_window(devices, settings, last, on_save):
     def center():
         root.update_idletasks()
         w, h = root.winfo_reqwidth(), root.winfo_reqheight()
-        root.geometry(f"+{max(0, (root.winfo_screenwidth() - w) // 2)}+{max(0, (root.winfo_screenheight() - h) // 2 - 30)}")
+        root.geometry(f"+{max(0, (root.winfo_screenwidth() - w) // 2)}+{max(0, (work_area_height(root) - h) // 2)}")
     root.after(10, center)
     root.mainloop()
 
 
 # ---------- แอป ----------
 
+def self_install():
+    """เปิดจากที่อื่น (เช่น Downloads) → คัดลอกไป INSTALL_DIR, ตั้งเปิดพร้อม Windows, เปิดตัวนั้นแทน
+    คืน True ถ้าตัวนี้ควรปิด (ส่งต่อให้ตัวที่ติดตั้งแล้ว)"""
+    dest = INSTALL_DIR / EXE_NAME
+    if is_running(dest):
+        return True  # มีตัวที่ติดตั้งแล้วรันอยู่ — ไม่เปิดซ้ำ
+    try:
+        install_copy(Path(sys.executable), dest)
+        set_startup(True, exe=dest)
+        subprocess.Popen([str(dest), "--installed-from", sys.executable], cwd=dest.parent, env=relaunch_env())
+        return True
+    except Exception:
+        log_error("self-install")
+        return False  # ใช้งานต่อจากที่เดิม
+
+
 def app():
+    if needs_install():
+        cleanup_old_exe()  # อัปเดตจาก v1.4.x ที่ Downloads ทิ้ง .old ไว้ — ลบก่อนย้ายไปที่ถาวร
+        if self_install():
+            return
+    installed_from = sys.argv[sys.argv.index("--installed-from") + 1] if "--installed-from" in sys.argv else None
     threading.Thread(target=cleanup_old_exe, daemon=True).start()
     cache = load_cache()
     first_run = "settings" not in cache
@@ -744,7 +856,8 @@ def app():
         {"key": "none", "kind": None, "name": "ไม่พบอุปกรณ์ที่รองรับ", "read": lambda: None}]
     save_cache(cache)
     stop, wake, lock, settings_open = threading.Event(), threading.Event(), threading.Lock(), threading.Lock()
-    alerted = set()
+    alerted, full_notified = set(), set()
+    history = cache.setdefault("history", {})
     icons = []
 
     def label(dev):
@@ -762,8 +875,20 @@ def app():
                 name = label(dev)
                 if res:
                     dev["stale"] = False
+                    prev = last.get(dev["key"])
                     last[dev["key"]] = [list(res), time.strftime("%d/%m %H:%M")]
-                    icon.icon, icon.title = make_icon(res), tooltip(name, res)
+                    hist = history.setdefault(dev["key"], [])
+                    record_history(hist, time.time(), res[0], res[1])
+                    eta = None if res[1] else fmt_remaining(estimate_remaining_h(hist, time.time()))
+                    icon.icon, icon.title = make_icon(res), tooltip(name, res, eta)
+                    was_charging = bool(prev and prev[0][1])
+                    full = res[0] >= 100 and (res[1] or was_charging)
+                    if full and dev["key"] not in full_notified:
+                        if settings.get("notify_full", True):
+                            icon.notify(f"{name} ชาร์จเต็มแล้ว — ถอดสายได้เลย", "ชาร์จเต็ม")
+                        full_notified.add(dev["key"])
+                    elif not res[1] and res[0] < 100:
+                        full_notified.discard(dev["key"])
                     low = bool(settings["alert"]) and res[0] <= settings["alert"] and not res[1]
                     if low and dev["key"] not in alerted:
                         icon.notify(f"{name} เหลือ {res[0]}% — ควรชาร์จ", "แบตใกล้หมด")
@@ -785,7 +910,7 @@ def app():
 
         def run():
             try:
-                settings_window(all_devices, settings, last, on_save=wake.set)
+                settings_window(all_devices, settings, last, on_save=wake.set, history=history)
             finally:
                 settings_open.release()
         threading.Thread(target=run, daemon=True).start()
@@ -869,6 +994,7 @@ def app():
         icon.run_detached()
 
     def loop():
+        nonlocal installed_from
         show_first = first_run
         while not stop.is_set():
             refresh()
@@ -876,6 +1002,11 @@ def app():
             if show_first:
                 show_first = False
                 open_settings()
+            if installed_from:
+                icons[0].notify(f"ติดตั้งไว้ที่ {INSTALL_DIR} และตั้งให้เปิดพร้อม Windows แล้ว — "
+                                f"ลบไฟล์เดิม ({Path(installed_from).name} ใน {Path(installed_from).parent.name}) ได้เลย",
+                                "ติดตั้งเรียบร้อย")
+                installed_from = None
             wake.wait(settings["interval"])
             wake.clear()
 
@@ -886,6 +1017,43 @@ def app():
 def test():
     assert is_newer("v1.2.0", "1.1.0") and is_newer("v1.10.0", "1.9.0")
     assert not is_newer("v1.1.0", "1.1.0") and not is_newer("v1.0.0", "1.1.0") and not is_newer("beta", "1.1.0")
+
+    # ประมาณเวลาที่เหลือ: ข้อมูลน้อย/ช่วงชาร์จ → None
+    H = 3600
+    hist = []
+    for i, p in enumerate([80, 78, 76, 74, 72, 70]):  # ลด 2% ทุก 24 นาที = 5%/ชม. รวม 2 ชม.
+        record_history(hist, 1000 + i * 1440, p, False)
+    assert round(estimate_remaining_h(hist, 1000 + 5 * 1440), 1) == 14.0  # 70% / 5%/ชม.
+    assert round(estimate_remaining_h(hist, 1000 + 5 * 1440 + 4 * H), 1) == 10.0  # ผ่านไปอีก 4 ชม.
+    assert estimate_remaining_h(hist[:3], 1000 + 2 * 1440) is None       # ยังไม่ถึง 2 ชม.
+    hist2 = [[0, 90, False], [2 * H, 80, False], [3 * H, 60, True], [3 * H + 60, 85, False]]
+    assert estimate_remaining_h(hist2, 3 * H + 60) is None               # เพิ่งชาร์จ เริ่มนับใหม่
+    hist3 = [[0, 50, False], [H, 40, False], [2 * H, 70, False], [5 * H, 64, False]]
+    assert round(estimate_remaining_h(hist3, 5 * H)) == 32               # ใช้เฉพาะช่วงหลังแบตเพิ่ม: 2%/ชม.
+    assert fmt_remaining(0.5) == "ไม่ถึง 1 ชม." and fmt_remaining(7.4) == "~7 ชม." and fmt_remaining(72) == "~3 วัน"
+    old_hist = []
+    record_history(old_hist, 0, 50, False)
+    record_history(old_hist, 8 * 86400, 49, False)
+    assert len(old_hist) == 1                                            # เก่ากว่า 7 วันถูกลบ
+    rh = []
+    record_history(rh, 0, 50, False)
+    record_history(rh, 60, 50, False)
+    assert len(rh) == 1                                                  # ค่าไม่เปลี่ยน ไม่เก็บซ้ำทุกนาที
+
+    # ติดตั้งไว้ที่ถาวร: คัดลอกใหม่ / แทนตัวเดิม; ไม่ติดตั้งตอนรันจากซอร์ส
+    import tempfile
+    assert not needs_install()
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        src = d / "Downloads" / EXE_NAME
+        src.parent.mkdir()
+        src.write_bytes(b"MZ v2")
+        dest = d / "Install" / EXE_NAME
+        install_copy(src, dest)
+        assert dest.read_bytes() == b"MZ v2"
+        src.write_bytes(b"MZ v3")
+        install_copy(src, dest)
+        assert dest.read_bytes() == b"MZ v3" and not is_running(dest)
 
     # อัปเดตตัวเอง: สลับไฟล์ได้, ถ้าวางไฟล์ใหม่ไม่ได้ต้องคืนตัวเดิม, ไฟล์โหลดไม่ครบต้องถูกปฏิเสธ
     import tempfile
