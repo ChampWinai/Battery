@@ -38,22 +38,66 @@ DATA_DIR = Path(os.environ.get("APPDATA", APP_DIR)) / "BatteryTray"
 CACHE = DATA_DIR / "battery_cache.json"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 RELEASES_PAGE = "https://github.com/ChampWinai/Battery/releases/latest"
 RELEASES_API = "https://api.github.com/repos/ChampWinai/Battery/releases/latest"
 UPDATE_EVERY_S = 24 * 3600
 
 
-def latest_release():
-    """(tag, url) ของ Release ล่าสุดบน GitHub หรือ None ถ้าเช็คไม่ได้ (ออฟไลน์ ฯลฯ)"""
+EXE_NAME = "BatteryTray.exe"
+
+
+def latest_release(api=RELEASES_API):
+    """{tag, url, asset_url, asset_size} ของ Release ล่าสุด หรือ None ถ้าเช็คไม่ได้ (ออฟไลน์ ฯลฯ)"""
     import urllib.request
     try:
-        req = urllib.request.Request(RELEASES_API, headers={"User-Agent": "BatteryTray"})
+        req = urllib.request.Request(api, headers={"User-Agent": "BatteryTray"})
         with urllib.request.urlopen(req, timeout=10) as r:
             d = json.load(r)
-        return d["tag_name"], d["html_url"]
+        asset = next((a for a in d.get("assets", []) if a.get("name") == EXE_NAME), {})
+        return {"tag": d["tag_name"], "url": d["html_url"],
+                "asset_url": asset.get("browser_download_url"), "asset_size": asset.get("size")}
     except Exception:
         return None
+
+
+def download_update(url, size, dest):
+    """โหลด exe ใหม่ลง dest — ตรวจขนาดตรงกับ Release และเป็นไฟล์ exe (ขึ้นต้น MZ)"""
+    import urllib.request
+    part = dest.with_name(dest.name + ".part")
+    req = urllib.request.Request(url, headers={"User-Agent": "BatteryTray"})
+    with urllib.request.urlopen(req, timeout=60) as r, part.open("wb") as f:
+        shutil.copyfileobj(r, f)
+    data_ok = part.stat().st_size == size and part.read_bytes()[:2] == b"MZ"
+    if not data_ok:
+        part.unlink(missing_ok=True)
+        raise ValueError(f"ไฟล์อัปเดตไม่สมบูรณ์ ({part.name})")
+    os.replace(part, dest)
+
+
+def swap_exe(target, new):
+    """แทน target ด้วย new — exe ที่กำลังรันเปลี่ยนชื่อได้แต่เขียนทับไม่ได้ จึงย้ายตัวเดิมไปเป็น .old ก่อน"""
+    old = target.with_name(target.name + ".old")
+    old.unlink(missing_ok=True)
+    os.replace(target, old)
+    try:
+        os.replace(new, target)
+    except OSError:
+        os.replace(old, target)  # คืนตัวเดิม
+        raise
+
+
+def cleanup_old_exe():
+    """ลบ BatteryTray.exe.old ที่เหลือจากการอัปเดต (ตัวเก่าอาจยังปิดไม่เสร็จ จึงลองซ้ำ)"""
+    if not FROZEN:
+        return
+    old = Path(sys.executable).with_name(Path(sys.executable).name + ".old")
+    for _ in range(30):
+        try:
+            old.unlink(missing_ok=True)
+            return
+        except OSError:
+            time.sleep(1)
 
 
 def is_newer(tag, current):
@@ -689,6 +733,7 @@ def settings_window(devices, settings, last, on_save):
 # ---------- แอป ----------
 
 def app():
+    threading.Thread(target=cleanup_old_exe, daemon=True).start()
     cache = load_cache()
     first_run = "settings" not in cache
     settings = {**DEFAULTS, **cache.get("settings", {})}
@@ -767,23 +812,50 @@ def app():
         cache["update_checked"] = time.time()
         save_cache(cache)
         rel = latest_release()
-        if not rel or not is_newer(rel[0], VERSION):
+        if not rel or not is_newer(rel["tag"], VERSION):
             return
-        update["tag"], update["url"] = rel
+        update.update(rel)
         for icon in icons:
             icon.update_menu()
-        if cache.get("update_notified") != rel[0]:
-            cache["update_notified"] = rel[0]
+        if cache.get("update_notified") != rel["tag"]:
+            cache["update_notified"] = rel["tag"]
             save_cache(cache)
-            icons[0].notify(f"Battery Tray {rel[0]} พร้อมให้ดาวน์โหลดแล้ว — คลิกขวาที่ไอคอน → ดาวน์โหลดเวอร์ชันใหม่",
-                            "มีเวอร์ชันใหม่")
+            icons[0].notify(f"Battery Tray {rel['tag']} พร้อมแล้ว — คลิกขวาที่ไอคอน → {update_label()}", "มีเวอร์ชันใหม่")
 
-    def open_update(*_):
+    def can_self_update():
+        return FROZEN and bool(update.get("asset_url")) and isinstance(update.get("asset_size"), int)
+
+    def update_label(*_):
+        verb = "อัปเดตเป็น" if can_self_update() else "ดาวน์โหลด"
+        return f"{verb} {update.get('tag')} ตอนนี้" if can_self_update() else f"{verb}เวอร์ชันใหม่ ({update.get('tag')})"
+
+    def open_release_page():
         import webbrowser
         webbrowser.open(update.get("url", RELEASES_PAGE))
 
-    menu = pystray.Menu(pystray.MenuItem(lambda _: f"ดาวน์โหลดเวอร์ชันใหม่ ({update.get('tag')})", open_update,
-                                         visible=lambda _: bool(update)),
+    def run_update():
+        target = Path(sys.executable)
+        new = target.with_name(target.name + ".new")
+        try:
+            icons[0].notify(f"กำลังดาวน์โหลด {update['tag']}...", "กำลังอัปเดต")
+            download_update(update["asset_url"], update["asset_size"], new)
+            swap_exe(target, new)
+        except Exception:
+            log_error("self-update")
+            new.unlink(missing_ok=True)
+            icons[0].notify("อัปเดตอัตโนมัติไม่สำเร็จ — เปิดหน้าดาวน์โหลดให้แล้ว", "อัปเดตไม่สำเร็จ")
+            open_release_page()
+            return
+        subprocess.Popen([str(target)], cwd=target.parent, env=relaunch_env())
+        quit_all()
+
+    def on_update(*_):
+        if can_self_update():
+            threading.Thread(target=run_update, daemon=True).start()
+        else:
+            open_release_page()
+
+    menu = pystray.Menu(pystray.MenuItem(update_label, on_update, visible=lambda _: bool(update)),
                         pystray.MenuItem("ตั้งค่า...", open_settings, default=True),
                         pystray.MenuItem("รีเฟรช", lambda *_: wake.set()),
                         pystray.MenuItem("ค้นหาอุปกรณ์ใหม่", rescan),
@@ -814,6 +886,32 @@ def app():
 def test():
     assert is_newer("v1.2.0", "1.1.0") and is_newer("v1.10.0", "1.9.0")
     assert not is_newer("v1.1.0", "1.1.0") and not is_newer("v1.0.0", "1.1.0") and not is_newer("beta", "1.1.0")
+
+    # อัปเดตตัวเอง: สลับไฟล์ได้, ถ้าวางไฟล์ใหม่ไม่ได้ต้องคืนตัวเดิม, ไฟล์โหลดไม่ครบต้องถูกปฏิเสธ
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        target, new = d / EXE_NAME, d / (EXE_NAME + ".new")
+        target.write_bytes(b"MZ old")
+        new.write_bytes(b"MZ new")
+        swap_exe(target, new)
+        assert target.read_bytes() == b"MZ new" and (d / (EXE_NAME + ".old")).read_bytes() == b"MZ old"
+        target.write_bytes(b"MZ cur")
+        try:
+            swap_exe(target, d / "missing.exe")
+        except OSError:
+            pass
+        assert target.read_bytes() == b"MZ cur"
+        src = d / "src.exe"
+        src.write_bytes(b"MZ" + b"x" * 10)
+        download_update(src.as_uri(), 12, d / "ok.exe")
+        assert (d / "ok.exe").read_bytes()[:2] == b"MZ"
+        for bad_size in (11, 13):
+            try:
+                download_update(src.as_uri(), bad_size, d / "bad.exe")
+                raise AssertionError("ขนาดไม่ตรงต้องถูกปฏิเสธ")
+            except ValueError:
+                assert not (d / "bad.exe").exists() and not (d / "bad.exe.part").exists()
 
     # อุปกรณ์ไม่ส่งค่าแบต: ขึ้นเมื่อเคยเสียบ, บอกสถานะเสียบ/ถอดถูกต้อง
     global present_usb_keys
