@@ -38,7 +38,7 @@ DATA_DIR = Path(os.environ.get("APPDATA", APP_DIR)) / "BatteryTray"
 CACHE = DATA_DIR / "battery_cache.json"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
-VERSION = "1.5.2"
+VERSION = "1.6.0"
 RELEASES_PAGE = "https://github.com/ChampWinai/Battery/releases/latest"
 RELEASES_API = "https://api.github.com/repos/ChampWinai/Battery/releases/latest"
 UPDATE_EVERY_S = 6 * 3600  # + เช็คทุกครั้งที่เปิดแอป
@@ -462,22 +462,38 @@ def level_color(pct):
     return (239, 68, 68) if pct <= 20 else (245, 158, 11) if pct <= 40 else (34, 197, 94)
 
 
-def make_icon(res, stale=False):
-    """ไอคอน 64px: ตัวเลข % ใหญ่ + แถบระดับแบตด้านล่าง + สายฟ้าถ้าชาร์จ"""
+def taskbar_is_light():
+    """True ถ้า taskbar ใช้ธีมสว่าง (Settings → Personalization → Colors)"""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
+            return winreg.QueryValueEx(k, "SystemUsesLightTheme")[0] == 1
+    except OSError:
+        return False
+
+
+def make_icon(res, stale=False, light=False):
+    """ไอคอน 64px: ตัวเลข % ใหญ่ + แถบระดับแบตด้านล่าง + สายฟ้าถ้าชาร์จ
+    light=True → ตัวเลขสีเข้มสำหรับ taskbar ธีมสว่าง"""
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     ok = isinstance(res, (tuple, list))
     pct = res[0] if ok else 0
     text = str(pct) if ok else "--"
     font = ImageFont.truetype("segoeuib.ttf", 40 if len(text) >= 3 else 54)
-    fill = (160, 160, 160) if stale else (255, 255, 255)
-    d.text((32, 26), text, font=font, fill=fill, anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0))
-    d.rectangle((0, 54, 63, 63), fill=(70, 70, 70))
+    if light:
+        fill, stroke, track, gray = ((110, 110, 110) if stale else (17, 24, 39)), (255, 255, 255), (200, 205, 212), (150, 150, 150)
+    else:
+        fill, stroke, track, gray = ((160, 160, 160) if stale else (255, 255, 255)), (0, 0, 0), (70, 70, 70), (140, 140, 140)
+    d.text((32, 26), text, font=font, fill=fill, anchor="mm", stroke_width=2, stroke_fill=stroke)
+    d.rectangle((0, 54, 63, 63), fill=track)
     if ok:
-        color = (140, 140, 140) if stale else level_color(pct)
+        color = gray if stale else level_color(pct)
         d.rectangle((0, 54, max(6, 64 * pct // 100) - 1, 63), fill=color)
         if res[1]:
-            d.polygon([(52, 0), (44, 14), (50, 14), (46, 26), (60, 10), (53, 10), (58, 0)], fill=(255, 220, 0))
+            d.polygon([(52, 0), (44, 14), (50, 14), (46, 26), (60, 10), (53, 10), (58, 0)],
+                      fill=(234, 179, 8) if light else (255, 220, 0), outline=(120, 90, 0) if light else None)
     return img
 
 
@@ -516,6 +532,22 @@ def estimate_remaining_h(hist, now):
     if span_h < MIN_SPAN_H or drop < MIN_DROP:
         return None
     return max(0.0, p1 / (drop / span_h) - (now - t1) / 3600)
+
+
+def history_points(hist, now, w, h, pad=4):
+    """แปลงประวัติเป็นพิกัดกราฟ → (pts [(x, y, charging)], span_s)
+    แกน x เริ่มที่จุดแรกที่มี (ไม่เกิน 7 วัน, อย่างน้อย 1 ชม.) ถึงตอนนี้; y = % (บน=100)"""
+    recent = [r for r in hist if r[0] >= now - HISTORY_DAYS * 86400]
+    span = min(HISTORY_DAYS * 86400, max(3600, now - recent[0][0])) if recent else 3600
+    t0 = now - span
+    pts = [(round(pad + (ts - t0) / span * (w - 2 * pad), 1),
+            round(pad + (100 - max(0, min(100, pct))) / 100 * (h - 2 * pad), 1), bool(chg))
+           for ts, pct, chg in recent if ts >= t0]
+    return pts, span
+
+
+def fmt_span(span):
+    return f"{round(span / 3600)} ชม.ก่อน" if span < 86400 else f"{round(span / 86400)} วันก่อน"
 
 
 def fmt_remaining(h):
@@ -655,6 +687,52 @@ def settings_window(devices, settings, last, on_save, history=None):
     summary = f"{len(shown)} อุปกรณ์" + (f"  ·  ต่ำสุด {min(known)}%" if known else "")
     ctk.CTkLabel(body, text=summary, font=(TH, 13), text_color=C["sub"]).pack(anchor="w", pady=(0, 10))
 
+    def draw_graph(parent, key):
+        """กราฟ % ย้อนหลัง (สูงสุด 7 วัน) — เส้นเขียว, จุดเหลือง = ช่วงชาร์จ"""
+        import tkinter as tk
+        w, h, left, bottom = 460, 200, 34, 20
+        cv = tk.Canvas(parent, width=w, height=h, bg=C["card"], highlightthickness=0)
+        hist = list((history or {}).get(key, []))
+        if hist:  # ค่าล่าสุดยังเป็นจริงจนถึงตอนนี้ — ลากเส้นต่อถึงขอบขวา
+            hist.append([time.time(), hist[-1][1], hist[-1][2]])
+        pts, span = history_points(hist, time.time(), w - left, h - bottom)
+        for pct in (0, 25, 50, 75, 100):
+            y = 4 + (100 - pct) / 100 * (h - bottom - 8)
+            cv.create_line(left, y, w - 4, y, fill=C["line"])
+            cv.create_text(left - 4, y, text=f"{pct}%", fill=C["sub"], font=(TH, 9), anchor="e")
+        cv.create_text(left, h - 8, text=fmt_span(span), fill=C["sub"], font=(TH, 9), anchor="w")
+        cv.create_text(w - 4, h - 8, text="ตอนนี้", fill=C["sub"], font=(TH, 9), anchor="e")
+        pts = [(x + left - 4, y, chg) for x, y, chg in pts]
+        if len(pts) < 2:
+            cv.create_text((w + left) / 2, (h - bottom) / 2, fill=C["sub"], font=(TH, 12),
+                           text="ยังมีข้อมูลไม่พอ\nแอปจะเก็บค่าทุกครั้งที่ % เปลี่ยน", justify="center")
+        else:
+            cv.create_line(*[c for x, y, _ in pts for c in (x, y)], fill=C["accent"], width=2)
+            for x, y, chg in pts:
+                if chg:
+                    cv.create_oval(x - 3, y - 3, x + 3, y + 3, fill="#EAB308", outline="")
+        return cv
+
+    graph_win = {}  # เปิดได้ทีละหน้าต่าง
+
+    def show_graph(key, name):
+        if graph_win.get("w") is not None and graph_win["w"].winfo_exists():
+            graph_win["w"].destroy()
+        top = ctk.CTkToplevel(root, fg_color=C["bg"])
+        top.title(f"ประวัติแบต — {name}")
+        top.resizable(False, False)
+        top.attributes("-topmost", True)
+        ctk.CTkLabel(top, text=name, font=(TH, 16, "bold"), text_color=C["text"]).pack(anchor="w", padx=18, pady=(14, 0))
+        ctk.CTkLabel(top, text="% แบตย้อนหลัง · จุดเหลือง = กำลังชาร์จ", font=(TH, 12),
+                     text_color=C["sub"]).pack(anchor="w", padx=18, pady=(0, 8))
+        box = ctk.CTkFrame(top, fg_color=C["card"], corner_radius=16, border_width=1, border_color=C["line"])
+        box.pack(padx=16, pady=(0, 16))
+        draw_graph(box, key).pack(padx=12, pady=12)
+        top.bind("<Escape>", lambda _: top.destroy())
+        root.update_idletasks()
+        top.geometry(f"+{root.winfo_rootx() + root.winfo_width() + 8}+{root.winfo_rooty()}")
+        graph_win["w"] = top
+
     # ---- การ์ดอุปกรณ์ ----
     rows = []
     if not shown:
@@ -717,9 +795,16 @@ def settings_window(devices, settings, last, on_save, history=None):
                              fg_color=C["card"], border_width=1, border_color=C["card"], corner_radius=8, height=32)
         entry.grid(row=0, column=1, sticky="ew", pady=(14, 0))
         focus_ring(entry)
-        pill = ctk.CTkFrame(card, fg_color=C["muted"], corner_radius=10)
-        pill.grid(row=1, column=1, sticky="w", padx=4, pady=(4, 0))
+        status_row = ctk.CTkFrame(card, fg_color="transparent")
+        status_row.grid(row=1, column=1, sticky="ew", padx=4, pady=(4, 0))
+        pill = ctk.CTkFrame(status_row, fg_color=C["muted"], corner_radius=10)
+        pill.pack(side="left")
         ctk.CTkLabel(pill, text=status, font=(TH, 12), text_color=scolor).pack(padx=10, pady=1)
+        hist_btn = ctk.CTkButton(status_row, text="ประวัติ ↗", width=72, height=24, corner_radius=8,
+                                 font=(TH, 12), fg_color="transparent", hover_color=C["muted"],
+                                 text_color=C["sub"], cursor="hand2")
+        hist_btn.pack(side="right")
+        hist_btn.configure(command=lambda k=dev["key"], n=name: show_graph(k, n.get().strip() or dev["name"]))
 
         ctk.CTkLabel(card, text=f"{pct}%" if pct is not None else "--", font=("Segoe UI", 30, "bold"),
                      text_color=color).grid(row=0, column=2, rowspan=2, padx=(8, 16))
@@ -893,6 +978,7 @@ def app():
 
     def refresh():
         with lock:
+            light = taskbar_is_light()
             for dev, icon in zip(devices, icons):
                 icon.visible = dev["key"] not in settings["hidden"]
                 try:
@@ -908,7 +994,7 @@ def app():
                     hist = history.setdefault(dev["key"], [])
                     record_history(hist, time.time(), res[0], res[1])
                     eta = None if res[1] else fmt_remaining(estimate_remaining_h(hist, time.time()))
-                    icon.icon, icon.title = make_icon(res), tooltip(name, res, eta)
+                    icon.icon, icon.title = make_icon(res, light=light), tooltip(name, res, eta)
                     was_charging = bool(prev and prev[0][1])
                     full = res[0] >= 100 and (res[1] or was_charging)
                     if full and dev["key"] not in full_notified:
@@ -926,10 +1012,10 @@ def app():
                 elif dev["key"] in last:
                     dev["stale"] = True
                     old, at = last[dev["key"]]
-                    icon.icon = make_icon(old, stale=True)
+                    icon.icon = make_icon(old, stale=True, light=light)
                     icon.title = f"{name}: {old[0]}% (ค่าล่าสุด {at}, ตอนนี้หลับอยู่)"
                 else:
-                    icon.icon, icon.title = make_icon(None), tooltip(name, None)
+                    icon.icon, icon.title = make_icon(None, light=light), tooltip(name, None)
             save_cache(cache)
 
     def open_settings(*_):
@@ -1024,7 +1110,7 @@ def app():
                         pystray.MenuItem("ปิด", quit_all))
     for dev in devices:
         old = last.get(dev["key"])
-        start = make_icon(old[0], stale=True) if old else make_icon(None)
+        start = make_icon(old[0] if old else None, stale=bool(old), light=taskbar_is_light())
         icons.append(pystray.Icon("battery_" + dev["key"], start, label(dev), menu))
     for icon in icons[1:]:
         icon.run_detached()
@@ -1068,6 +1154,12 @@ def test():
     assert estimate_remaining_h(hist2, 3 * H + 60) is None               # เพิ่งชาร์จ เริ่มนับใหม่
     hist3 = [[0, 50, False], [H, 40, False], [2 * H, 70, False], [5 * H, 64, False]]
     assert round(estimate_remaining_h(hist3, 5 * H)) == 32               # ใช้เฉพาะช่วงหลังแบตเพิ่ม: 2%/ชม.
+    pts, span = history_points([[-1, 80, False], [0, 100, False], [3.5 * 86400, 50, True], [7 * 86400, 0, False]],
+                               7 * 86400, 108, 108)
+    assert span == 7 * 86400 and pts == [(4, 4, False), (54, 54, True), (104, 104, False)]  # เก่ากว่า 7 วันถูกตัด
+    pts, span = history_points([[10 * H, 80, False], [12 * H, 70, False]], 13 * H, 108, 108)
+    assert span == 3 * H and pts[0][0] == 4 and fmt_span(span) == "3 ชม.ก่อน"  # แกนเริ่มที่จุดแรก
+    assert history_points([], 0, 100, 100) == ([], 3600) and fmt_span(2 * 86400) == "2 วันก่อน"
     assert fmt_remaining(0.5) == "ไม่ถึง 1 ชม." and fmt_remaining(7.4) == "~7 ชม." and fmt_remaining(72) == "~3 วัน"
     old_hist = []
     record_history(old_hist, 0, 50, False)
