@@ -1,0 +1,57 @@
+name: รายงานอุปกรณ์ / ปัญหา
+description: ใช้กับเมาส์ คีย์บอร์ด หูฟังรุ่นไหน อ่านแบตได้ไหม หรือเจอปัญหาอะไร
+title: "[อุปกรณ์] "
+labels: ["device-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ขอบคุณที่ช่วยทดสอบ! กด **รายงานปัญหา / แจ้งอุปกรณ์** จากเมนูคลิกขวาที่ไอคอน แล้ว 2 ช่องแรกจะกรอกให้เอง
+  - type: input
+    id: version
+    attributes:
+      label: เวอร์ชันแอป / Windows
+      placeholder: v1.7.0 · Windows 11
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: ยี่ห้อและรุ่นของอุปกรณ์
+      placeholder: เช่น Logitech G305, SteelSeries Arctis 7, Razer Viper V2 Pro
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: เชื่อมต่อแบบไหน
+      options:
+        - ดองเกิล 2.4G
+        - Bluetooth
+        - สาย USB
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: แอปแสดงผลเป็นอย่างไร
+      options:
+        - ✅ ถูกต้อง (ตรงกับโปรแกรมของยี่ห้อ)
+        - "% ไม่ตรงกับโปรแกรมของยี่ห้อ"
+        - ไม่เจออุปกรณ์เลย
+        - เจออุปกรณ์แต่ขึ้นว่าหลับอยู่ตลอด
+        - อื่นๆ (อธิบายด้านล่าง)
+    validations:
+      required: true
+  - type: textarea
+    id: devices
+    attributes:
+      label: อุปกรณ์ที่แอปเจอ (กรอกให้อัตโนมัติ)
+      render: markdown
+  - type: textarea
+    id: details
+    attributes:
+      label: รายละเอียดเพิ่มเติม
+      description: |
+        ถ้ามีไฟล์ `error.log` (แอปเปิดโฟลเดอร์ให้แล้วตอนกดรายงาน หรือหาได้ที่ `%APPDATA%\BatteryTray`) ลากไฟล์มาวางในช่องนี้ได้เลย
+      placeholder: เช่น โปรแกรมของยี่ห้อบอก 80% แต่แอปขึ้น 60%
