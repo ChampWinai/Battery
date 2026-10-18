@@ -38,7 +38,7 @@ DATA_DIR = Path(os.environ.get("APPDATA", APP_DIR)) / "BatteryTray"
 CACHE = DATA_DIR / "battery_cache.json"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 RELEASES_PAGE = "https://github.com/ChampWinai/Battery/releases/latest"
 RELEASES_API = "https://api.github.com/repos/ChampWinai/Battery/releases/latest"
 UPDATE_EVERY_S = 24 * 3600
@@ -531,19 +531,17 @@ def fmt_remaining(h):
 INSTALL_DIR = Path(os.environ.get("LOCALAPPDATA", str(DATA_DIR))) / "BatteryTray"
 
 
+def same_dir(a, b):
+    """เทียบโฟลเดอร์ทั้งแบบตรงตัวและแบบตาม link/redirect — ตรงแบบใดแบบหนึ่งถือว่าเป็นที่เดียวกัน
+    (resolve() อย่างเดียวพลาดได้ เช่น โปรเซสในแพ็กเกจ MSIX ที่ %LOCALAPPDATA% ถูก redirect)"""
+    norm = lambda p: os.path.normcase(os.path.abspath(p))  # noqa: E731
+    return norm(a) == norm(b) or norm(Path(a).resolve()) == norm(Path(b).resolve())
+
+
 def needs_install():
-    return FROZEN and Path(sys.executable).resolve().parent != INSTALL_DIR.resolve()
-
-
-def is_running(exe):
-    """exe ที่กำลังรันเปิดเพื่อเขียนไม่ได้บน Windows"""
-    try:
-        with open(exe, "r+b"):
-            return False
-    except PermissionError:
-        return True
-    except OSError:
+    if not FROZEN or "--installed-from" in sys.argv:  # เพิ่งถูกติดตั้งมา — ห้ามติดตั้งซ้ำ (กันวนไม่รู้จบ)
         return False
+    return not same_dir(Path(sys.executable).parent, INSTALL_DIR)
 
 
 def install_copy(src, dest):
@@ -823,16 +821,41 @@ def settings_window(devices, settings, last, on_save, history=None):
 
 # ---------- แอป ----------
 
+MUTEX_NAME = "Local\\BatteryTray.SingleInstance"
+WAIT_FLAG = "--wait-previous"  # เปิดตัวเองใหม่ (อัปเดต/ค้นหาใหม่/ติดตั้ง) — รอตัวเก่าปิดแทนการถูกบล็อก
+_mutex = None  # ถือไว้ตลอดอายุโปรเซส; Windows ปล่อยให้เองตอนปิด (แม้โปรเซสตาย)
+
+
+def acquire_single_instance(wait_s=0, name=MUTEX_NAME):
+    """True ถ้าเป็นตัวเดียวในเครื่อง (named mutex ของ Windows — ไม่ขึ้นกับจังหวะเวลา)"""
+    global _mutex
+    import ctypes
+    k = ctypes.windll.kernel32
+    k.CreateMutexW.restype = ctypes.c_void_p
+    handle = k.CreateMutexW(None, False, name)
+    if not handle:
+        return True  # สร้างไม่ได้ — ไม่บล็อกการใช้งาน
+    r = k.WaitForSingleObject(ctypes.c_void_p(handle), int(wait_s * 1000))
+    if r in (0, 0x80):  # WAIT_OBJECT_0 / WAIT_ABANDONED (ตัวเก่าตายโดยไม่ปล่อย)
+        _mutex = handle
+        return True
+    k.CloseHandle(ctypes.c_void_p(handle))
+    return False
+
+
+def relaunch(cmd, cwd, *args):
+    """เปิดตัวเองใหม่ — ตัวใหม่จะรอ mutex จนตัวนี้ปิด"""
+    subprocess.Popen([*cmd, *args, WAIT_FLAG], cwd=cwd, env=relaunch_env())
+
+
 def self_install():
     """เปิดจากที่อื่น (เช่น Downloads) → คัดลอกไป INSTALL_DIR, ตั้งเปิดพร้อม Windows, เปิดตัวนั้นแทน
     คืน True ถ้าตัวนี้ควรปิด (ส่งต่อให้ตัวที่ติดตั้งแล้ว)"""
     dest = INSTALL_DIR / EXE_NAME
-    if is_running(dest):
-        return True  # มีตัวที่ติดตั้งแล้วรันอยู่ — ไม่เปิดซ้ำ
     try:
         install_copy(Path(sys.executable), dest)
         set_startup(True, exe=dest)
-        subprocess.Popen([str(dest), "--installed-from", sys.executable], cwd=dest.parent, env=relaunch_env())
+        relaunch([str(dest)], dest.parent, "--installed-from", sys.executable)
         return True
     except Exception:
         log_error("self-install")
@@ -840,6 +863,11 @@ def self_install():
 
 
 def app():
+    if not acquire_single_instance(wait_s=20 if WAIT_FLAG in sys.argv else 0):
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, "Battery Tray เปิดอยู่แล้ว — ดูที่ไอคอน % ข้างนาฬิกา\n"
+                                         "(ถ้าไม่เห็น ให้กดลูกศร ^ บนแถบงาน)", "Battery Tray", 0x40)
+        return
     if needs_install():
         cleanup_old_exe()  # อัปเดตจาก v1.4.x ที่ Downloads ทิ้ง .old ไว้ — ลบก่อนย้ายไปที่ถาวร
         if self_install():
@@ -926,23 +954,29 @@ def app():
         cache.pop("kinds", None)
         cache.pop("logi", None)
         save_cache(cache)
-        subprocess.Popen(launch_cmd(), cwd=APP_DIR, env=relaunch_env())
+        relaunch(launch_cmd(), APP_DIR)
         quit_all()
 
     update = {}
 
-    def check_update():
-        if time.time() - cache.get("update_checked", 0) < UPDATE_EVERY_S:
+    def check_update(manual=False):
+        if not manual and time.time() - cache.get("update_checked", 0) < UPDATE_EVERY_S:
             return
         cache["update_checked"] = time.time()
         save_cache(cache)
         rel = latest_release()
-        if not rel or not is_newer(rel["tag"], VERSION):
+        if not rel:
+            if manual:
+                icons[0].notify("เช็คอัปเดตไม่ได้ — ตรวจการเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่", "เช็คอัปเดต")
+            return
+        if not is_newer(rel["tag"], VERSION):
+            if manual:
+                icons[0].notify(f"ใช้เวอร์ชันล่าสุดแล้ว (v{VERSION})", "เช็คอัปเดต")
             return
         update.update(rel)
         for icon in icons:
             icon.update_menu()
-        if cache.get("update_notified") != rel["tag"]:
+        if manual or cache.get("update_notified") != rel["tag"]:
             cache["update_notified"] = rel["tag"]
             save_cache(cache)
             icons[0].notify(f"Battery Tray {rel['tag']} พร้อมแล้ว — คลิกขวาที่ไอคอน → {update_label()}", "มีเวอร์ชันใหม่")
@@ -971,7 +1005,7 @@ def app():
             icons[0].notify("อัปเดตอัตโนมัติไม่สำเร็จ — เปิดหน้าดาวน์โหลดให้แล้ว", "อัปเดตไม่สำเร็จ")
             open_release_page()
             return
-        subprocess.Popen([str(target)], cwd=target.parent, env=relaunch_env())
+        relaunch([str(target)], target.parent)
         quit_all()
 
     def on_update(*_):
@@ -984,6 +1018,8 @@ def app():
                         pystray.MenuItem("ตั้งค่า...", open_settings, default=True),
                         pystray.MenuItem("รีเฟรช", lambda *_: wake.set()),
                         pystray.MenuItem("ค้นหาอุปกรณ์ใหม่", rescan),
+                        pystray.MenuItem("เช็คอัปเดต",
+                                         lambda *_: threading.Thread(target=check_update, args=(True,), daemon=True).start()),
                         pystray.Menu.SEPARATOR,
                         pystray.MenuItem("ปิด", quit_all))
     for dev in devices:
@@ -1043,6 +1079,8 @@ def test():
     # ติดตั้งไว้ที่ถาวร: คัดลอกใหม่ / แทนตัวเดิม; ไม่ติดตั้งตอนรันจากซอร์ส
     import tempfile
     assert not needs_install()
+    assert same_dir("C:\\Users\\X\\AppData\\Local\\BatteryTray", "c:\\users\\x\\appdata\\local\\batterytray\\")
+    assert not same_dir("C:\\Users\\X\\Downloads", "C:\\Users\\X\\AppData\\Local\\BatteryTray")
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
         src = d / "Downloads" / EXE_NAME
@@ -1053,7 +1091,15 @@ def test():
         assert dest.read_bytes() == b"MZ v2"
         src.write_bytes(b"MZ v3")
         install_copy(src, dest)
-        assert dest.read_bytes() == b"MZ v3" and not is_running(dest)
+        assert dest.read_bytes() == b"MZ v3"
+
+    # กันเปิดซ้ำ: ตัวแรกได้ mutex, โปรเซสอื่นที่ขอชื่อเดียวกันต้องถูกปฏิเสธ
+    name = f"Local\\BatteryTray.Test.{os.getpid()}"
+    assert acquire_single_instance(0, name)
+    probe = ("import sys; sys.path.insert(0, %r); import battery_monitor as b; "
+             "print(b.acquire_single_instance(0, %r))" % (str(Path(__file__).resolve().parent), name))
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=60).stdout.strip()
+    assert out.endswith("False"), out
 
     # อัปเดตตัวเอง: สลับไฟล์ได้, ถ้าวางไฟล์ใหม่ไม่ได้ต้องคืนตัวเดิม, ไฟล์โหลดไม่ครบต้องถูกปฏิเสธ
     import tempfile
