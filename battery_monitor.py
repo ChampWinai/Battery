@@ -38,10 +38,10 @@ DATA_DIR = Path(os.environ.get("APPDATA", APP_DIR)) / "BatteryTray"
 CACHE = DATA_DIR / "battery_cache.json"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 RELEASES_PAGE = "https://github.com/ChampWinai/Battery/releases/latest"
 RELEASES_API = "https://api.github.com/repos/ChampWinai/Battery/releases/latest"
-UPDATE_EVERY_S = 24 * 3600
+UPDATE_EVERY_S = 6 * 3600  # + เช็คทุกครั้งที่เปิดแอป
 
 
 EXE_NAME = "BatteryTray.exe"
@@ -959,8 +959,8 @@ def app():
 
     update = {}
 
-    def check_update(manual=False):
-        if not manual and time.time() - cache.get("update_checked", 0) < UPDATE_EVERY_S:
+    def check_update(manual=False, startup=False):
+        if not (manual or startup) and time.time() - cache.get("update_checked", 0) < UPDATE_EVERY_S:
             return
         cache["update_checked"] = time.time()
         save_cache(cache)
@@ -1032,9 +1032,11 @@ def app():
     def loop():
         nonlocal installed_from
         show_first = first_run
+        show_startup_check = True
         while not stop.is_set():
             refresh()
-            check_update()
+            check_update(startup=show_startup_check)
+            show_startup_check = False
             if show_first:
                 show_first = False
                 open_settings()
