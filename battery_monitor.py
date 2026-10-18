@@ -38,7 +38,7 @@ DATA_DIR = Path(os.environ.get("APPDATA", APP_DIR)) / "BatteryTray"
 CACHE = DATA_DIR / "battery_cache.json"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 RELEASES_PAGE = "https://github.com/ChampWinai/Battery/releases/latest"
 RELEASES_API = "https://api.github.com/repos/ChampWinai/Battery/releases/latest"
 UPDATE_EVERY_S = 24 * 3600
@@ -379,6 +379,22 @@ def load_cache():
         return {}
 
 
+ERROR_LOG = DATA_DIR / "error.log"
+
+
+def log_error(where):
+    """ต่อท้าย traceback ลง %APPDATA%\\BatteryTray\\error.log (ตัดเหลือ ~200 KB)"""
+    import traceback
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if ERROR_LOG.exists() and ERROR_LOG.stat().st_size > 200_000:
+            ERROR_LOG.write_text(ERROR_LOG.read_text(encoding="utf-8")[-100_000:], encoding="utf-8")
+        with ERROR_LOG.open("a", encoding="utf-8") as f:
+            f.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} v{VERSION} {where}\n{traceback.format_exc()}\n")
+    except OSError:
+        pass
+
+
 def save_cache(cache):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CACHE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
@@ -391,8 +407,8 @@ def discover(cache):
                    headset_devices, bt_devices, lambda: nobattery_devices(cache)):
         try:
             devices += source()
-        except Exception:  # แหล่งใดพังไม่ควรทำให้แหล่งอื่นหาย
-            pass
+        except Exception:  # แหล่งใดพังไม่ควรทำให้แหล่งอื่นหาย — แต่จดไว้ให้ไล่ปัญหาได้
+            log_error("discover")
     return devices
 
 
@@ -438,6 +454,15 @@ def launch_cmd():
     if FROZEN:
         return [sys.executable]
     return [str(Path(sys.executable).with_name("pythonw.exe")), str(Path(__file__).resolve())]
+
+
+def relaunch_env():
+    """env สำหรับเปิดตัวเองใหม่ — ตัวใหม่ต้องแตกไฟล์เอง ไม่ใช้โฟลเดอร์ชั่วคราวของตัวเก่า
+    (ไม่งั้นพอตัวเก่าปิด โฟลเดอร์ถูกลบ → 'Failed to import encodings module' / หา USB ไม่เจอ)"""
+    env = dict(os.environ)
+    if FROZEN:
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
 
 
 def set_startup(on):
@@ -687,6 +712,7 @@ def app():
                 try:
                     res = dev["read"]()
                 except Exception:
+                    log_error(f"read {dev['key']}")
                     res = None
                 name = label(dev)
                 if res:
@@ -730,7 +756,7 @@ def app():
         cache.pop("kinds", None)
         cache.pop("logi", None)
         save_cache(cache)
-        subprocess.Popen(launch_cmd(), cwd=APP_DIR)
+        subprocess.Popen(launch_cmd(), cwd=APP_DIR, env=relaunch_env())
         quit_all()
 
     update = {}
