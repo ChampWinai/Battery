@@ -42,16 +42,20 @@ jobs:
       - name: Build exe
         run: python -m PyInstaller --noconfirm --onefile --noconsole --name BatteryTray --icon docs\icon.ico --collect-all customtkinter battery_monitor.py
 
-      - name: Smoke test exe (starts and stays up)
+      # exe ใน dist จะติดตั้งตัวเองไป %LOCALAPPDATA%\BatteryTray แล้วเปิดตัวนั้นแทน (ตัวแรกปิดไปตามปกติ)
+      - name: Smoke test exe (installs itself and stays up)
         shell: pwsh
         run: |
-          $p = Start-Process dist\BatteryTray.exe -PassThru
-          Start-Sleep 20
-          $alive = -not $p.HasExited
-          Get-CimInstance Win32_Process -Filter "Name='BatteryTray.exe'" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA 0 }
+          Start-Process dist\BatteryTray.exe
+          Start-Sleep 40
+          $installed = "$env:LOCALAPPDATA\BatteryTray\BatteryTray.exe"
+          $running = @(Get-CimInstance Win32_Process -Filter "Name='BatteryTray.exe'")
+          $running | Format-Table ProcessId, ExecutablePath -AutoSize | Out-String | Write-Host
+          $running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA 0 }
           $log = "$env:APPDATA\BatteryTray\error.log"
-          if (Test-Path $log) { Get-Content $log }
-          if (-not $alive) { throw "BatteryTray.exe exited during startup" }
+          if (Test-Path $log) { Get-Content $log; throw "error.log was written" }
+          if (-not (Test-Path $installed)) { throw "exe did not install itself to $installed" }
+          if (-not ($running | Where-Object ExecutablePath -eq $installed)) { throw "installed BatteryTray.exe is not running" }
 
       - uses: actions/upload-artifact@v4
         with:
