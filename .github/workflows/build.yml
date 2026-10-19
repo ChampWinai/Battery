@@ -1,0 +1,76 @@
+name: Test & Build
+
+# push main / PR / กดรันเอง → ทดสอบ + build exe (เก็บเป็น artifact)
+# push tag vX.Y.Z           → เหมือนกัน + สร้าง Release แนบ BatteryTray.exe
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Tag must match VERSION in batterytray/config.py
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: python
+        run: |
+          import os, re, sys
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          src = open("batterytray/config.py", encoding="utf-8").read()
+          version = re.search(r'^VERSION = "([^"]+)"', src, re.M).group(1)
+          print(f"tag={tag} VERSION={version}")
+          sys.exit(0 if tag == version else f"tag v{tag} ไม่ตรงกับ VERSION {version} — แก้ config.py ก่อนออก Release")
+
+      - name: Self-test
+        run: python battery_monitor.py --test
+
+      - name: Build exe
+        run: python -m PyInstaller --noconfirm --onefile --noconsole --name BatteryTray --icon docs\icon.ico --collect-all customtkinter battery_monitor.py
+
+      - name: Smoke test exe (starts and stays up)
+        shell: pwsh
+        run: |
+          $p = Start-Process dist\BatteryTray.exe -PassThru
+          Start-Sleep 20
+          $alive = -not $p.HasExited
+          Get-CimInstance Win32_Process -Filter "Name='BatteryTray.exe'" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -EA 0 }
+          $log = "$env:APPDATA\BatteryTray\error.log"
+          if (Test-Path $log) { Get-Content $log }
+          if (-not $alive) { throw "BatteryTray.exe exited during startup" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BatteryTray-${{ github.sha }}
+          path: dist/BatteryTray.exe
+
+      - name: Release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: notes
+        shell: bash
+        run: |
+          f=".github/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$f" ]; then echo "path=$f" >> "$GITHUB_OUTPUT"; else echo "path=" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Battery Tray ${{ github.ref_name }}
+          files: dist/BatteryTray.exe
+          body_path: ${{ steps.notes.outputs.path }}
+          generate_release_notes: ${{ steps.notes.outputs.path == '' }}

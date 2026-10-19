@@ -77,6 +77,18 @@ Settings → Personalization → Taskbar → Other system tray icons → เป�
 | `batterytray/report.py` | ลิงก์รายงานปัญหา |
 | `batterytray/config.py` | ค่าคงที่, cache, error log |
 
+## ออก Release (สำหรับผู้ดูแล)
+
+GitHub Actions ([build.yml](.github/workflows/build.yml)) จะทดสอบและ build exe ให้ทุกครั้งที่ push ขึ้น `main`
+ส่วนการออกเวอร์ชันใหม่:
+
+1. แก้ `VERSION` ใน `batterytray/config.py` เช่น `1.8.0`
+2. (ไม่บังคับ) เขียนบันทึกการเปลี่ยนแปลงที่ `.github/release-notes/v1.8.0.md` — ถ้าไม่มี GitHub จะสร้างจากรายการ commit ให้
+3. `git commit` → `git tag v1.8.0` → `git push origin main v1.8.0`
+
+Actions จะเช็คว่า tag ตรงกับ `VERSION` → ทดสอบ → build → สร้าง Release แนบ `BatteryTray.exe` ให้เอง
+แล้วผู้ใช้ทุกคนจะได้แจ้งเตือนอัปเดตภายใน 6 ชม.
+
 ## ทดสอบ
 
 ```
