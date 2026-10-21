@@ -11,7 +11,8 @@ from batterytray.devices.headsetcontrol import headsetcontrol_parse
 from batterytray.devices.logitech import logi_battery, volt_to_pct
 from batterytray.devices import nobattery
 from batterytray.devices.nobattery import nobattery_devices
-from batterytray.devices.vkhub import feature_sizes, parse_status, status_frame
+from batterytray.devices import valkyrie
+from batterytray.devices.valkyrie import PRODUCTS, battery_frame, label, parse_battery
 from batterytray.history import estimate_remaining_h, fmt_remaining, fmt_span, history_points, record_history
 from batterytray.icons import tooltip
 from batterytray.report import device_lines, issue_url, usb_key
@@ -136,24 +137,38 @@ def test():
     sl = scan_lines(e2, max_desc=0, max_samples=1, sample_bytes=4)
     assert "      ↳ ส่งออกมาเอง: 05646464…" in sl and not any("0563" in x for x in sl)   # จำกัดจำนวน/ความยาวได้
 
-    # VK HUB (Valkyrie VK75 ฯลฯ): descriptor → ขนาด feature report, เฟรม 0xF7, อ่านคำตอบ
-    kbd_desc = bytes.fromhex(
-        "05010906a101"            # Generic Desktop / Keyboard
-        "0507190029ff150025ff750895068100"   # input keys
-        "0600ff0901"              # vendor usage
-        "15002600ff75089540b102"  # Feature: 8 bit × 64 (report ID 0)
-        "c0")
-    assert feature_sizes(kbd_desc) == {0: 64}
-    assert feature_sizes(bytes.fromhex("05010906a1018501750895019501b1028502750895108502b102c0")) == {1: 1, 2: 16}
-    apple_desc = bytes.fromhex("05010906a101050719e029e71500250175019508810295057508810305081901290591029501750391038501c0")
-    assert feature_sizes(apple_desc).get(0, 0) < 64                      # คีย์บอร์ด Apple แท้: ไม่ส่งคำสั่ง
-    assert status_frame() == bytes([0x00, 0xF7]) + bytes(63)
-    assert parse_status(bytes([1, 82, 0, 0, 1, 1, 1, 0, 0])) == (82, None)  # คีย์บอร์ดออนไลน์ 82%
-    assert parse_status(bytes([1, 70, 55, 0, 0, 1, 3, 0, 0])) == (70, None)  # ทั้งคีย์บอร์ดและเมาส์
-    assert parse_status(bytes([1, 82, 0, 1, 1, 1, 1, 0, 0])) is None         # คีย์บอร์ดหลับ/ออฟไลน์
-    assert parse_status(bytes([0, 82, 0, 0, 1, 1, 1, 0, 0])) is None         # ดองเกิลบอกว่ายังอ่านไม่ได้
-    assert parse_status(bytes([1, 0, 60, 0, 0, 1, 2, 0, 0])) is None         # มีแต่เมาส์
-    assert parse_status(bytes(3)) is None
+    # Valkyrie (ไดรเวอร์ทางการ VK75): เฟรม 0x20 0x01 + checksum, คำตอบ 20 01 00 %แบต
+    assert battery_frame() == bytes([0x00, 0x20, 0x01]) + bytes(29) + bytes([0x21]) and len(battery_frame()) == 33
+    assert parse_battery(bytes([0x20, 0x01, 0x00, 76]) + bytes(28)) == (76, None)
+    assert parse_battery(bytes([0x20, 0x01, 0x00, 120])) == (100, None)          # ไดรเวอร์ปัดเกิน 100
+    assert parse_battery(bytes([0x20, 0x01, 0x00, 0])) is None                   # 0 = ยังไม่รู้ค่า
+    assert parse_battery(bytes([0x05, 0x77, 0x40])) is None                      # รายงานอื่นที่ไม่ใช่คำตอบ
+    assert parse_battery(bytes([0x20, 0x02, 0x00, 50])) is None
+    assert label("VK 75 Wireless Receiver") == "VK 75" and label("2.4G Dongle") == "คีย์บอร์ด Valkyrie"
+    assert "VK 75 Wireless Receiver" in PRODUCTS[(0x05AC, 0x024F)] and "Apple Keyboard" not in PRODUCTS[(0x05AC, 0x024F)]
+
+    class FakeVK:  # ดองเกิลจำลอง: ตอบรายงานอื่นก่อน แล้วค่อยตอบคำสั่งแบต
+        sent = []
+
+        def __init__(self):
+            self.queue = [bytes([0x05, 0x77, 0x40]), bytes([0x20, 0x01, 0x00, 64]) + bytes(28)]
+
+        def open_path(self, p): pass
+        def close(self): pass
+
+        def write(self, data):
+            FakeVK.sent.append(bytes(data))
+            return len(data)
+
+        def read(self, n, timeout):
+            return list(self.queue.pop(0)) if self.queue else []
+
+    real_hid = valkyrie.hid
+    try:
+        valkyrie.hid = type("FakeHid", (), {"device": FakeVK})
+        assert valkyrie.query(b"x") == (64, None) and FakeVK.sent == [battery_frame()]
+    finally:
+        valkyrie.hid = real_hid
     vk = group_hid([{"vendor_id": 0x05AC, "product_id": 0x024F, "usage_page": 1, "usage": 6, "path": b"kbd",
                      "product_string": "VK 75 Wireless Receiver", "manufacturer_string": ""},
                     {"vendor_id": 0x05AC, "product_id": 0x024F, "usage_page": 0xFFFF, "usage": 1, "path": b"ff"}])

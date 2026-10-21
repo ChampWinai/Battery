@@ -47,7 +47,7 @@ Settings → Personalization → Taskbar → Other system tray icons → เป�
 |---|---|---|
 | เมาส์ดองเกิล 2.4G Compx/ATK (VID `3554`, `373B`) — VXE, ATK ฯลฯ | โปรโตคอลที่ ATK HUB ใช้ (ถอดจาก USB capture) | ✅ VXE R1 (`3554:f58e`), VXE R1 S (`373b:10c9`, [#2](../../issues/2)) |
 | คีย์บอร์ดดองเกิล Compx (VID `3554`) — AULA ฯลฯ | โปรโตคอล AULA จาก [womier-l65-linux](https://github.com/deepan-alve/womier-l65-linux) | ✅ ทดสอบกับ Aula |
-| คีย์บอร์ดดองเกิลระบบ **VK HUB** — Valkyrie VK75 (`05ac:024f`) | คำสั่งสถานะ `0xF7` ที่ VK HUB ใช้ (feature report บนช่องคีย์บอร์ด) | 🧪 รอยืนยันจากผู้ใช้ ([#2](../../issues/2)) |
+| คีย์บอร์ด **Valkyrie** VK75 / VK87 / VK99 (`05ac:024f`, `0c45:fefe`) | คำสั่ง `20 01` บนช่อง raw HID `0xFF60` จากไดรเวอร์ทางการ VK75 | 🧪 รอยืนยันจากผู้ใช้ ([#2](../../issues/2)) |
 | **Logitech** เมาส์ / คีย์บอร์ด / หูฟัง — Unifying, Bolt, Lightspeed, สาย | HID++ 2.0 (feature 0x1004 / 0x1000 / 0x1001) | 🧪 ยังไม่ได้ทดสอบกับของจริง |
 | **หูฟัง SteelSeries, Corsair, HyperX, Logitech, Roccat ฯลฯ** | [HeadsetControl](https://github.com/Sapd/HeadsetControl) — วาง `headsetcontrol.exe` ไว้ข้างโปรแกรม | 🧪 ยังไม่ได้ทดสอบกับของจริง |
 | อุปกรณ์ **Bluetooth** ทุกยี่ห้อที่ Windows รู้ค่าแบต | `DEVPKEY_Bluetooth_Battery` ของ Windows | 🧪 ยังไม่ได้ทดสอบกับของจริง |
