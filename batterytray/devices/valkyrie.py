@@ -30,24 +30,34 @@ def parse_battery(r):
     return min(r[3], 100), None
 
 
-def query(path, tries=20):
+TRACE = {}  # path → บันทึกการคุยรอบล่าสุด (แนบในผลสแกน เพื่อดูว่าติดขั้นไหน)
+
+
+def query(path, tries=20, timeout=100):
+    log = TRACE[path] = []
     dev = hid.device()
     try:
         dev.open_path(path)
-    except OSError:
+    except OSError as e:
+        log.append(f"open: {e}")
         return None
     try:
         while dev.read(64, 0):  # ล้าง report ที่ค้าง ไม่ให้ปนกับคำตอบ
             pass
-        if dev.write(battery_frame()) < 0:
+        n = dev.write(battery_frame())
+        log.append(f"write {n}")
+        if n < 0:
             return None
         for _ in range(tries):  # ไดรเวอร์อ่านซ้ำได้ 20 ครั้งจนกว่าคำตอบจะตรงคำสั่ง
-            r = dev.read(64, 50)
-            got = parse_battery(bytes(r)) if r else None
+            r = bytes(dev.read(64, timeout))
+            if r and len(log) < 6:
+                log.append(r[:8].hex())
+            got = parse_battery(r) if r else None
             if got:
                 return got
-    except OSError:
-        pass
+        log.append("no reply" if len(log) == 1 else "no match")
+    except OSError as e:
+        log.append(f"error: {e}")
     finally:
         dev.close()
     return None
@@ -89,6 +99,11 @@ def valkyrie_devices():
             continue
         key = f"{d['vendor_id']:04x}:{d['product_id']:04x}"
         found.setdefault(key, (product, []))[1].append(d)
-    return [{"key": k, "kind": "keyboard", "name": label(product),
-             "read": _reader([d["path"] for d in sorted(ds, key=_rank)])}
-            for k, (product, ds) in found.items()]
+    out = []
+    for k, (product, ds) in found.items():
+        ds = sorted(ds, key=_rank)
+        out.append({"key": k, "kind": "keyboard", "name": label(product),
+                    "read": _reader([d["path"] for d in ds]),
+                    "debug": lambda ds=ds: [f"mi{d.get('interface_number')} 0x{d['usage_page']:04x}: "
+                                            + " / ".join(TRACE.get(d["path"], ["(ยังไม่ได้ถาม)"])) for d in ds]})
+    return out

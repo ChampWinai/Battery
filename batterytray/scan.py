@@ -18,6 +18,7 @@ def group_hid(infos):
         if (d["usage_page"], d["usage"]) not in g["pages"]:
             g["pages"].append((d["usage_page"], d["usage"]))
         g["paths"].setdefault(d["usage_page"], d["path"])
+        g.setdefault("ifaces", {}).setdefault(d["usage_page"], d.get("interface_number", -1))
         if (d["usage_page"], d["usage"]) == (1, 6):
             g["kbd_path"] = d["path"]
     return out
@@ -42,12 +43,15 @@ def build_entries(groups, devices, results, descriptors=None, samples=None):
         else:
             status, detail = FOUND, "เจอแต่ยังอ่านแบตไม่ได้ (ลองขยับ/กดปุ่มอุปกรณ์แล้วสแกนใหม่)"
         entries.append({"key": k or dev["key"], "name": g.get("name") or dev["name"], "app_name": dev["name"],
+                        "ifaces": g.get("ifaces", {}),
                         "status": status, "detail": detail, "pages": g.get("pages", []), "readable": bool(res),
-                        "no_battery": bool(dev.get("no_battery"))})
+                        "no_battery": bool(dev.get("no_battery")),
+                        "debug": [] if res or not dev.get("debug") else dev["debug"]()})
     for k, g in groups.items():
         if k in claimed or not any(p >= 0xFF00 for p, _ in g["pages"]):
             continue  # อุปกรณ์ HID มาตรฐานทั่วไป (ไม่มีช่องผู้ผลิต) — ไม่มีทางอ่านแบตได้จากที่นี่
         entries.append({"key": k, "name": g["name"] or "(ไม่มีชื่อ)", "app_name": None, "status": UNSUPPORTED,
+                        "ifaces": g.get("ifaces", {}),
                         "detail": "ยังไม่รองรับ — กดส่งผลสแกนเพื่อช่วยเพิ่ม", "pages": g["pages"], "readable": False,
                         "no_battery": False})
     for e in entries:
@@ -63,13 +67,16 @@ def scan_lines(entries, max_desc=96, max_samples=3, sample_bytes=32):
     lines = []
     for e in entries:
         lines.append(f"{icon[e['status']]} `{e['key']}` {e['name']} — {e['detail']}")
+        lines += [f"    ⇄ {x}" for x in e.get("debug", [])]
         if e["status"] != OK and not e["no_battery"]:
             for page, usage in e["pages"]:
                 if page < 0xFF00 and (page, usage) != (1, 6):
                     continue
                 desc = e["descriptors"].get(page, "")
                 cut = desc[:max_desc * 2] + ("…" if len(desc) > max_desc * 2 else "")
-                lines.append(f"    page 0x{page:04x} usage 0x{usage:04x}" + (f" desc {cut}" if desc else ""))
+                mi = e.get("ifaces", {}).get(page, -1)
+                lines.append(f"    page 0x{page:04x} usage 0x{usage:04x}" + (f" mi{mi}" if mi >= 0 else "")
+                             + (f" desc {cut}" if desc else ""))
                 for hx in e.get("samples", {}).get(page, [])[:max_samples]:
                     lines.append(f"      ↳ ส่งออกมาเอง: {hx[:sample_bytes * 2]}" + ("…" if len(hx) > sample_bytes * 2 else ""))
     return lines or ["(ไม่พบอุปกรณ์)"]

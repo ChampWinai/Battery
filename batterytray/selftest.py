@@ -169,6 +169,7 @@ def test():
     try:
         valkyrie.hid = type("FakeHid", (), {"device": FakeVK})
         assert valkyrie.query(b"x") == (64, None) and FakeVK.sent == [battery_frame()]
+        assert valkyrie.TRACE[b"x"] == ["write 33", "057740", "20010040" + "00" * 4]
         vkd = lambda path, page, iface, name="VK 75 Wireless Receiver": {
             "vendor_id": 0x05AC, "product_id": 0x024F, "usage_page": page, "usage": 0x61, "path": path,
             "interface_number": iface, "product_string": name}
@@ -183,6 +184,10 @@ def test():
             assert dev["read"]() == (70, None) and tried == [b"ff59", b"ff60"]  # MI_03 ก่อน แล้วจำช่องที่ตอบ
             tried.clear()
             assert dev["read"]() == (70, None) and tried == [b"ff60"]
+            valkyrie.TRACE.update({b"ff59": ["write 33", "no reply"]})
+            assert dev["debug"]() == ["mi3 0xff59: write 33 / no reply", "mi2 0xff60: (ยังไม่ได้ถาม)"]
+            dbg = scan_lines(build_entries(group_hid([vkd(b"ff59", 0xFF59, 3)]), [dev], {}))
+            assert "    ⇄ mi3 0xff59: write 33 / no reply" in dbg and any(" mi3" in x for x in dbg)
         finally:
             valkyrie.query = real_query
     finally:
