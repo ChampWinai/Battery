@@ -129,6 +129,11 @@ def test():
     assert "    page 0xff03 usage 0x0000 desc 0603ff06…" in lines and "    page 0xff00 usage 0x0001 desc 06" in lines
     assert not any("1234:0001" in x for x in lines)                      # คีย์บอร์ด HID มาตรฐานไม่อยู่ในรายงาน
     assert scan_lines([]) == ["(ไม่พบอุปกรณ์)"]
+    e2 = build_entries(groups, devs, {}, {}, {("25a7:fa70", 0xFF00): ["05" + "64" * 40, "0563"], ("x", 1): ["ff"]})
+    nk = next(e for e in e2 if e["key"] == "25a7:fa70")
+    assert nk["samples"] == {0xFF00: ["05" + "64" * 40, "0563"]}
+    sl = scan_lines(e2, max_desc=0, max_samples=1, sample_bytes=4)
+    assert "      ↳ ส่งออกมาเอง: 05646464…" in sl and not any("0563" in x for x in sl)   # จำกัดจำนวน/ความยาวได้
 
     # อัปเดตตัวเอง: สลับไฟล์ได้, ถ้าวางไฟล์ใหม่ไม่ได้ต้องคืนตัวเดิม, ไฟล์โหลดไม่ครบต้องถูกปฏิเสธ
     import tempfile

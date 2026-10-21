@@ -9,7 +9,7 @@ from batterytray.config import (APP_DIR, DATA_DIR, DEFAULTS, ERROR_LOG, FROZEN, 
 from batterytray.devices import discover
 from batterytray.history import estimate_remaining_h, fmt_remaining, record_history
 from batterytray.report import device_lines, issue_url
-from batterytray.scan import build_entries, group_hid, read_descriptors, scan_lines, OK
+from batterytray.scan import build_entries, group_hid, listen_reports, read_descriptors, scan_lines, OK
 from batterytray.icons import make_icon, taskbar_is_light, tooltip
 from batterytray.settings_ui import settings_window
 from batterytray.system import INSTALL_DIR, WAIT_FLAG, acquire_single_instance, launch_cmd, needs_install, relaunch, self_install
@@ -105,7 +105,8 @@ def app():
             save_cache(cache)
         entries = build_entries(groups, devs, results)
         need = [e["key"] for e in entries if e["status"] != OK and not e["no_battery"]]
-        entries = build_entries(groups, devs, results, read_descriptors(groups, need))
+        # ฟังสิ่งที่อุปกรณ์ส่งออกมาเอง (อ่านอย่างเดียว) — บางดองเกิลส่งค่าแบตเป็นระยะ
+        entries = build_entries(groups, devs, results, read_descriptors(groups, need), listen_reports(groups, need))
         tray_keys = {d["key"] for d in devices}
         new_found = any(results.get(d["key"]) and d["key"] not in tray_keys for d in devs)
         return entries, new_found
@@ -113,8 +114,8 @@ def app():
     def report_url(entries=None):
         if entries is None:
             entries, _ = run_scan()
-        for max_desc in (96, 24, 0):  # GitHub รับ URL ได้ราว 8k ตัวอักษร
-            url = issue_url(VERSION, device_lines(all_devices, last, label), scan_lines(entries, max_desc))
+        for max_desc, max_samples in ((96, 3), (24, 3), (0, 2), (0, 0)):  # GitHub รับ URL ได้ราว 8k ตัวอักษร
+            url = issue_url(VERSION, device_lines(all_devices, last, label), scan_lines(entries, max_desc, max_samples))
             if len(url) < 7500:
                 break
         return url

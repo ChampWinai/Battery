@@ -21,10 +21,10 @@ def group_hid(infos):
     return out
 
 
-def build_entries(groups, devices, results, descriptors=None):
+def build_entries(groups, devices, results, descriptors=None, samples=None):
     """รวมผลสแกน: อุปกรณ์ที่แอปรู้จัก (อ่านได้/ยังไม่ได้) + อุปกรณ์ที่มีช่องผู้ผลิตแต่ยังไม่รองรับ
-    results = {dev key: (pct, charging) หรือ None}, descriptors = {(vid:pid, page): hex}"""
-    descriptors = descriptors or {}
+    results = {dev key: (pct, charging) หรือ None}, descriptors/samples = {(vid:pid, page): hex / [hex]}"""
+    descriptors, samples = descriptors or {}, samples or {}
     entries, claimed = [], set()
     for dev in devices:
         if dev["key"] == "none":
@@ -50,11 +50,12 @@ def build_entries(groups, devices, results, descriptors=None):
                         "no_battery": False})
     for e in entries:
         e["descriptors"] = {pg: descriptors[(e["key"], pg)] for pg, _ in e["pages"] if (e["key"], pg) in descriptors}
+        e["samples"] = {pg: samples[(e["key"], pg)] for pg, _ in e["pages"] if samples.get((e["key"], pg))}
     order = {OK: 0, INFO: 1, FOUND: 2, UNSUPPORTED: 3}
     return sorted(entries, key=lambda e: (order[e["status"]], e["name"]))
 
 
-def scan_lines(entries, max_desc=96):
+def scan_lines(entries, max_desc=96, max_samples=3, sample_bytes=32):
     """ข้อความรายงาน: ทุกอุปกรณ์ + รายละเอียดช่อง/descriptor ของตัวที่อ่านไม่ได้"""
     icon = {OK: "✅", INFO: "ℹ️", FOUND: "⚠️", UNSUPPORTED: "❔"}
     lines = []
@@ -67,6 +68,8 @@ def scan_lines(entries, max_desc=96):
                 desc = e["descriptors"].get(page, "")
                 cut = desc[:max_desc * 2] + ("…" if len(desc) > max_desc * 2 else "")
                 lines.append(f"    page 0x{page:04x} usage 0x{usage:04x}" + (f" desc {cut}" if desc else ""))
+                for hx in e.get("samples", {}).get(page, [])[:max_samples]:
+                    lines.append(f"      ↳ ส่งออกมาเอง: {hx[:sample_bytes * 2]}" + ("…" if len(hx) > sample_bytes * 2 else ""))
     return lines or ["(ไม่พบอุปกรณ์)"]
 
 
@@ -89,4 +92,46 @@ def read_descriptors(groups, keys):
                     dev.close()
                 except Exception:
                     pass
+    return out
+
+
+def listen_reports(groups, keys, seconds=10, per_page=6):
+    """ฟัง input report ที่อุปกรณ์ส่งออกมาเอง (อ่านอย่างเดียว ไม่ส่งคำสั่ง) บนช่องผู้ผลิตของ keys
+    คืน {(vid:pid, page): [hex ไม่ซ้ำ ตามลำดับที่เจอ]}"""
+    import time
+
+    import hid
+    handles = []
+    for k in keys:
+        for page, path in groups.get(k, {}).get("paths", {}).items():
+            if page < 0xFF00:
+                continue
+            dev = hid.device()
+            try:
+                dev.open_path(path)
+                dev.set_nonblocking(True)
+                handles.append(((k, page), dev))
+            except Exception:
+                pass
+    out = {}
+    try:
+        end = time.time() + seconds
+        while time.time() < end and handles:
+            for kp, dev in handles:
+                try:
+                    r = dev.read(64)
+                except Exception:
+                    continue
+                if r:
+                    hx = bytes(r).hex()
+                    got = out.setdefault(kp, [])
+                    if hx not in got and len(got) < per_page:
+                        got.append(hx)
+            time.sleep(0.01)
+    finally:
+        for _, dev in handles:
+            try:
+                dev.close()
+            except Exception:
+                pass
     return out

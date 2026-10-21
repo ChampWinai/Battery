@@ -122,7 +122,7 @@ def settings_window(devices, settings, last, on_save, history=None, on_scan=None
                      font=(TH, 12), text_color=C["sub"]).pack(anchor="w", padx=18, pady=(0, 8))
         listbox = ctk.CTkScrollableFrame(top, width=460, height=300, fg_color=C["card"], corner_radius=16)
         listbox.pack(padx=16, pady=(0, 8))
-        status = ctk.CTkLabel(top, text="กำลังสแกน... (ขยับเมาส์/กดปุ่มอุปกรณ์ไว้ จะอ่านค่าได้ง่ายขึ้น)",
+        status = ctk.CTkLabel(top, text="กำลังสแกน ~15 วินาที... ขยับเมาส์และกดปุ่มคีย์บอร์ดไว้ระหว่างนี้",
                               font=(TH, 12), text_color=C["sub"])
         status.pack(anchor="w", padx=18)
         bar = ctk.CTkFrame(top, fg_color="transparent")
@@ -175,7 +175,7 @@ def settings_window(devices, settings, last, on_save, history=None, on_scan=None
             again_btn.configure(state="disabled")
             send_btn.configure(state="disabled")
             add_btn.pack_forget()
-            status.configure(text="กำลังสแกน... (ขยับเมาส์/กดปุ่มอุปกรณ์ไว้ จะอ่านค่าได้ง่ายขึ้น)")
+            status.configure(text="กำลังสแกน ~15 วินาที... ขยับเมาส์และกดปุ่มคีย์บอร์ดไว้ระหว่างนี้")
             box = {}
 
             def work():

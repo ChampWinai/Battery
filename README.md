@@ -45,7 +45,7 @@ Settings → Personalization → Taskbar → Other system tray icons → เป�
 
 | ยี่ห้อ / ชนิด | วิธีอ่าน | สถานะ |
 |---|---|---|
-| เมาส์ดองเกิล 2.4G Compx/ATK (VID `3554`) — VXE, ATK ฯลฯ | โปรโตคอลที่ ATK HUB ใช้ (ถอดจาก USB capture) | ✅ ทดสอบกับ VXE R1 |
+| เมาส์ดองเกิล 2.4G Compx/ATK (VID `3554`, `373B`) — VXE, ATK ฯลฯ | โปรโตคอลที่ ATK HUB ใช้ (ถอดจาก USB capture) | ✅ VXE R1 (`3554:f58e`), VXE R1 S (`373b:10c9`, [#2](../../issues/2)) |
 | คีย์บอร์ดดองเกิล Compx (VID `3554`) — AULA ฯลฯ | โปรโตคอล AULA จาก [womier-l65-linux](https://github.com/deepan-alve/womier-l65-linux) | ✅ ทดสอบกับ Aula |
 | **Logitech** เมาส์ / คีย์บอร์ด / หูฟัง — Unifying, Bolt, Lightspeed, สาย | HID++ 2.0 (feature 0x1004 / 0x1000 / 0x1001) | 🧪 ยังไม่ได้ทดสอบกับของจริง |
 | **หูฟัง SteelSeries, Corsair, HyperX, Logitech, Roccat ฯลฯ** | [HeadsetControl](https://github.com/Sapd/HeadsetControl) — วาง `headsetcontrol.exe` ไว้ข้างโปรแกรม | 🧪 ยังไม่ได้ทดสอบกับของจริง |
