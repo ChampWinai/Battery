@@ -151,13 +151,15 @@ def test():
         sent = []
 
         def __init__(self):
-            self.queue = [bytes([0x05, 0x77, 0x40]), bytes([0x20, 0x01, 0x00, 64]) + bytes(28)]
+            self.queue = [bytes([0x07, 0x00])]  # report ค้างจากก่อนส่งคำสั่ง ต้องถูกล้าง
 
         def open_path(self, p): pass
         def close(self): pass
 
         def write(self, data):
             FakeVK.sent.append(bytes(data))
+            assert not self.queue, "ต้องล้าง report ค้างก่อนเขียน"
+            self.queue = [bytes([0x05, 0x77, 0x40]), bytes([0x20, 0x01, 0x00, 64]) + bytes(28)]
             return len(data)
 
         def read(self, n, timeout):
@@ -167,6 +169,22 @@ def test():
     try:
         valkyrie.hid = type("FakeHid", (), {"device": FakeVK})
         assert valkyrie.query(b"x") == (64, None) and FakeVK.sent == [battery_frame()]
+        vkd = lambda path, page, iface, name="VK 75 Wireless Receiver": {
+            "vendor_id": 0x05AC, "product_id": 0x024F, "usage_page": page, "usage": 0x61, "path": path,
+            "interface_number": iface, "product_string": name}
+        tried = []
+        valkyrie.hid = type("FakeHid", (), {"enumerate": staticmethod(lambda: [
+            vkd(b"ff60", 0xFF60, 2), vkd(b"ff59", 0xFF59, 3, " vk 75  wireless receiver "),
+            vkd(b"kbd", 1, 0), {**vkd(b"apple", 0xFF60, 3, "Apple Keyboard"), "product_id": 0x0250}])})
+        real_query = valkyrie.query
+        valkyrie.query = lambda p: tried.append(p) or ((70, None) if p == b"ff60" else None)
+        try:
+            [dev] = valkyrie.valkyrie_devices()
+            assert dev["read"]() == (70, None) and tried == [b"ff59", b"ff60"]  # MI_03 ก่อน แล้วจำช่องที่ตอบ
+            tried.clear()
+            assert dev["read"]() == (70, None) and tried == [b"ff60"]
+        finally:
+            valkyrie.query = real_query
     finally:
         valkyrie.hid = real_hid
     vk = group_hid([{"vendor_id": 0x05AC, "product_id": 0x024F, "usage_page": 1, "usage": 6, "path": b"kbd",
