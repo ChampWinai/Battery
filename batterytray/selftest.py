@@ -145,7 +145,7 @@ def test():
     assert parse_battery(bytes([0x05, 0x77, 0x40])) is None                      # รายงานอื่นที่ไม่ใช่คำตอบ
     assert parse_battery(bytes([0x20, 0x02, 0x00, 50])) is None
     assert label("VK 75 Wireless Receiver") == "VK 75" and label("2.4G Dongle") == "คีย์บอร์ด Valkyrie"
-    assert "VK 75 Wireless Receiver" in PRODUCTS[(0x05AC, 0x024F)] and "Apple Keyboard" not in PRODUCTS[(0x05AC, 0x024F)]
+    assert (0x05AC, 0x024F) in PRODUCTS
 
     class FakeVK:  # ดองเกิลจำลอง: ตอบรายงานอื่นก่อน แล้วค่อยตอบคำสั่งแบต
         sent = []
@@ -175,12 +175,13 @@ def test():
             "interface_number": iface, "product_string": name}
         tried = []
         valkyrie.hid = type("FakeHid", (), {"enumerate": staticmethod(lambda: [
-            vkd(b"ff60", 0xFF60, 2), vkd(b"ff59", 0xFF59, 3, " vk 75  wireless receiver "),
-            vkd(b"kbd", 1, 0), {**vkd(b"apple", 0xFF60, 3, "Apple Keyboard"), "product_id": 0x0250}])})
+            vkd(b"kbd", 1, 0), vkd(b"ff60", 0xFF60, 2, ""), vkd(b"ff59", 0xFF59, 3, ""),  # ช่อง raw ไม่มีชื่อ
+            {**vkd(b"other", 0xFF60, 3), "product_id": 0x0250}])})
         real_query = valkyrie.query
         valkyrie.query = lambda p: tried.append(p) or ((70, None) if p == b"ff60" else None)
         try:
             [dev] = valkyrie.valkyrie_devices()
+            assert dev["name"] == "VK 75"
             assert dev["read"]() == (70, None) and tried == [b"ff59", b"ff60"]  # MI_03 ก่อน แล้วจำช่องที่ตอบ
             tried.clear()
             assert dev["read"]() == (70, None) and tried == [b"ff60"]
@@ -188,6 +189,9 @@ def test():
             assert dev["debug"]() == ["mi3 0xff59: write 33 / no reply", "mi2 0xff60: (ยังไม่ได้ถาม)"]
             dbg = scan_lines(build_entries(group_hid([vkd(b"ff59", 0xFF59, 3)]), [dev], {}))
             assert "    ⇄ mi3 0xff59: write 33 / no reply" in dbg and any(" mi3" in x for x in dbg)
+            valkyrie.hid.enumerate = staticmethod(lambda: [vkd(b"kbd", 1, 0, "Apple Keyboard"),
+                                                           vkd(b"x", 0xFF00, 1, "Apple Keyboard")])
+            assert valkyrie.valkyrie_devices() == []  # คีย์บอร์ด Apple ที่ใช้ VID:PID เดียวกันแต่ไม่มีช่อง FF60
         finally:
             valkyrie.query = real_query
     finally:

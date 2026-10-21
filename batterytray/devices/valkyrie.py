@@ -9,12 +9,9 @@ import hid
 
 RAW_PAGE = 0xFF60
 RAW_PAGES = (0xFF60, 0xFF59)  # ช่อง raw 32/64 ไบต์ — ไดรเวอร์เลือกตามเลข interface (&mi_03) ไม่ใช่ usage page
-# VID:PID → ชื่อสินค้าตาม config.xml ของไดรเวอร์ Valkyrie — ส่งคำสั่งเฉพาะเมื่อชื่อตรง (05AC:024F ใช้ร่วมกับยี่ห้ออื่น)
-PRODUCTS = {
-    (0x05AC, 0x024F): {"VK 75 Wireless Receiver", "Valkyrie 75", "VK87", "Valkyrie-99", "2.4G Wireless Receiver",
-                       "Valkyrie-99pro", "VK99Pro Wireless Receiver"},
-    (0x0C45, 0xFEFE): {"2.4G Dongle"},
-}
+# VID:PID ดองเกิลตาม config.xml ของไดรเวอร์ Valkyrie — 05AC:024F ใช้ร่วมกับคีย์บอร์ด Apple แต่ของ Apple ไม่มีช่อง
+# raw HID 0xFF60 (แบบ QMK) จึงใช้ช่องนี้เป็นตัวกันพลาด ไม่ใช้ชื่อสินค้า (Windows คืนชื่อของแต่ละช่องไม่ตรงกัน)
+PRODUCTS = {(0x05AC, 0x024F), (0x0C45, 0xFEFE)}
 
 
 def battery_frame():
@@ -68,10 +65,6 @@ def label(product):
     return name if name and not name.startswith("2.4G") else "คีย์บอร์ด Valkyrie"
 
 
-def _norm(s):
-    return " ".join((s or "").split()).lower()
-
-
 def _rank(d):
     """ลำดับเหมือนไดรเวอร์: 2.4G = MI_03, สาย = MI_02, แล้วค่อยช่อง FF60 / FF59 อื่น"""
     i = d.get("interface_number", -1)
@@ -91,17 +84,19 @@ def _reader(paths):
 
 
 def valkyrie_devices():
-    found = {}
+    found, names = {}, {}
     for d in hid.enumerate():
-        names = PRODUCTS.get((d["vendor_id"], d["product_id"]))
-        product = (d.get("product_string") or "").strip()
-        if not names or d["usage_page"] not in RAW_PAGES or _norm(product) not in {_norm(n) for n in names}:
+        if (d["vendor_id"], d["product_id"]) not in PRODUCTS:
             continue
         key = f"{d['vendor_id']:04x}:{d['product_id']:04x}"
-        found.setdefault(key, (product, []))[1].append(d)
+        names[key] = names.get(key) or (d.get("product_string") or "").strip()
+        if d["usage_page"] in RAW_PAGES:
+            found.setdefault(key, []).append(d)
     out = []
-    for k, (product, ds) in found.items():
-        ds = sorted(ds, key=_rank)
+    for k, ds in found.items():
+        if not any(d["usage_page"] == RAW_PAGE for d in ds):
+            continue  # ไม่มีช่อง FF60 = ไม่ใช่ดองเกิล Valkyrie
+        ds, product = sorted(ds, key=_rank), names[k]
         out.append({"key": k, "kind": "keyboard", "name": label(product),
                     "read": _reader([d["path"] for d in ds]),
                     "debug": lambda ds=ds: [f"mi{d.get('interface_number')} 0x{d['usage_page']:04x}: "
