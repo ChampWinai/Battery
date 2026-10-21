@@ -49,6 +49,12 @@ body:
       label: อุปกรณ์ที่แอปเจอ (กรอกให้อัตโนมัติ)
       render: markdown
   - type: textarea
+    id: hid
+    attributes:
+      label: ช่อง HID ของผู้ผลิตที่ยังไม่รู้จัก (กรอกให้อัตโนมัติ)
+      description: ใช้หาดองเกิลที่ยังไม่รองรับ — มีแค่รหัส VID:PID และชื่อสินค้า
+      render: markdown
+  - type: textarea
     id: details
     attributes:
       label: รายละเอียดเพิ่มเติม

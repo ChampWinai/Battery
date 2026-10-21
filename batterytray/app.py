@@ -8,7 +8,7 @@ from batterytray.config import (APP_DIR, DATA_DIR, DEFAULTS, ERROR_LOG, FROZEN, 
                                 load_cache, log_error, save_cache)
 from batterytray.devices import discover
 from batterytray.history import estimate_remaining_h, fmt_remaining, record_history
-from batterytray.report import device_lines, issue_url
+from batterytray.report import device_lines, hid_inventory, issue_url, known_usb_keys
 from batterytray.icons import make_icon, taskbar_is_light, tooltip
 from batterytray.settings_ui import settings_window
 from batterytray.system import INSTALL_DIR, WAIT_FLAG, acquire_single_instance, launch_cmd, needs_install, relaunch, self_install
@@ -146,7 +146,13 @@ def app():
         """เปิดหน้า New Issue (กรอกเวอร์ชัน + อุปกรณ์ให้แล้ว) และโฟลเดอร์ log ถ้ามี error.log ให้ลากแนบ"""
         import os
         import webbrowser
-        webbrowser.open(issue_url(VERSION, device_lines(all_devices, last, label)))
+        try:
+            import hid
+            inventory = hid_inventory(hid.enumerate(), known_usb_keys(all_devices))
+        except Exception:
+            log_error("hid inventory")
+            inventory = None
+        webbrowser.open(issue_url(VERSION, device_lines(all_devices, last, label), inventory))
         if ERROR_LOG.exists():
             os.startfile(DATA_DIR)
 

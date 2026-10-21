@@ -15,7 +15,7 @@ DATA_DIR = Path(os.environ.get("APPDATA", APP_DIR)) / "BatteryTray"
 CACHE = DATA_DIR / "battery_cache.json"
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 RELEASES_PAGE = "https://github.com/ChampWinai/Battery/releases/latest"
 RELEASES_API = "https://api.github.com/repos/ChampWinai/Battery/releases/latest"
 UPDATE_EVERY_S = 6 * 3600  # + เช็คทุกครั้งที่เปิดแอป

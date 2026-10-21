@@ -1,11 +1,13 @@
-"""ดองเกิล 2.4G Compx/ATK (VID 3554) — เมาส์ (ATK HUB) และคีย์บอร์ด (AULA)"""
+"""ดองเกิล 2.4G Compx/ATK (VID 3554, 373B) — เมาส์ (ATK HUB) และคีย์บอร์ด (AULA)"""
 import hid
 import time
 
 
 # ---------- 1. ดองเกิล Compx ----------
 
-COMPX_VIDS = {0x3554}
+# 373B:1085 = ดองเกิล 1K ของ VXE R1 SE+ บางล็อต — โปรโตคอลเดียวกับ 3554 (HeyOkay/HaloBattery#36)
+COMPX_VIDS = {0x3554, 0x373B}
+VENDOR_PAGE = 0xFF02
 
 
 def mouse_frame():
@@ -63,10 +65,22 @@ def compx_query(path, kind, tries=8):
     return None
 
 
+def pick_paths(infos):
+    """{'vid:pid': path} หนึ่งช่องต่อดองเกิล — ใช้หน้า 0xFF02 ก่อน ถ้าไม่มีใช้หน้าของผู้ผลิตที่ต่ำสุด (≥0xFF00)"""
+    best = {}
+    for d in infos:
+        if d["vendor_id"] not in COMPX_VIDS or d["usage_page"] < 0xFF00:
+            continue
+        key = f"{d['vendor_id']:04x}:{d['product_id']:04x}"
+        rank = (d["usage_page"] != VENDOR_PAGE, d["usage_page"])
+        if key not in best or rank < best[key][0]:
+            best[key] = (rank, d["path"])
+    return {k: path for k, (_, path) in best.items()}
+
+
 def compx_devices(kinds):
     labels = {"mouse": "เมาส์", "keyboard": "คีย์บอร์ด", None: "อุปกรณ์"}
-    paths = {f"{d['vendor_id']:04x}:{d['product_id']:04x}": d["path"]
-             for d in hid.enumerate() if d["vendor_id"] in COMPX_VIDS and d["usage_page"] == 0xFF02}
+    paths = pick_paths(hid.enumerate())
     devices = []
     for key, path in paths.items():
         dev = {"key": key, "kind": kinds.get(key), "name": f"{labels[kinds.get(key)]} 2.4G ({key})"}

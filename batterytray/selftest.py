@@ -6,14 +6,14 @@ import subprocess
 import sys
 from batterytray.config import APP_DIR, EXE_NAME, load_cache
 from batterytray.devices import discover
-from batterytray.devices.compx import kb_frame, kb_parse, mouse_frame, mouse_parse
+from batterytray.devices.compx import kb_frame, kb_parse, mouse_frame, mouse_parse, pick_paths
 from batterytray.devices.headsetcontrol import headsetcontrol_parse
 from batterytray.devices.logitech import logi_battery, volt_to_pct
 from batterytray.devices import nobattery
 from batterytray.devices.nobattery import nobattery_devices
 from batterytray.history import estimate_remaining_h, fmt_remaining, fmt_span, history_points, record_history
 from batterytray.icons import tooltip
-from batterytray.report import device_lines, issue_url
+from batterytray.report import device_lines, hid_inventory, issue_url, known_usb_keys
 from batterytray.system import acquire_single_instance, install_copy, needs_install, same_dir
 from batterytray.updater import download_update, is_newer, swap_exe
 
@@ -86,6 +86,29 @@ def test():
     q = parse_qs(urlparse(issue_url("9.9.9", lines)).query)
     assert q["template"] == ["device-report.yml"] and q["version"][0].startswith("v9.9.9")
     assert q["devices"] == ["\n".join(lines)]
+
+    # ดองเกิล Compx: รับทั้ง VID 3554 และ 373B, เลือกหน้า 0xFF02 ก่อน ไม่มีค่อยใช้หน้าผู้ผลิตที่ต่ำสุด
+    hid_list = [
+        {"vendor_id": 0x3554, "product_id": 0xF58E, "usage_page": 0xFF05, "usage": 0, "path": b"a5"},
+        {"vendor_id": 0x3554, "product_id": 0xF58E, "usage_page": 0xFF02, "usage": 2, "path": b"a2"},
+        {"vendor_id": 0x373B, "product_id": 0x1085, "usage_page": 0xFF04, "usage": 2, "path": b"b4"},
+        {"vendor_id": 0x373B, "product_id": 0x1085, "usage_page": 0xFF03, "usage": 0, "path": b"b3"},
+        {"vendor_id": 0x373B, "product_id": 0x1085, "usage_page": 0x0001, "usage": 2, "path": b"bm"},
+        {"vendor_id": 0x046D, "product_id": 0xC547, "usage_page": 0xFF00, "usage": 2, "path": b"logi"},
+    ]
+    assert pick_paths(hid_list) == {"3554:f58e": b"a2", "373b:1085": b"b3"}
+
+    # รายงาน: VID:PID ที่รู้จัก, รายชื่อช่องผู้ผลิตที่ยังไม่รู้จัก, ช่อง hid ในลิงก์
+    known = known_usb_keys([{"key": "3554:f58e"}, {"key": "usb:040b:0897"}, {"key": "logi:c547:1"},
+                            {"key": "hc:0x1038:0x12ad"}, {"key": "bt:WH-1000XM4"}, {"key": "none"}])
+    assert known == {"3554:f58e", "040b:0897", "046d:c547", "1038:12ad"}
+    inv = hid_inventory([dict(d, product_string="2.4G Receiver", manufacturer_string="Compx") for d in hid_list],
+                        known)
+    assert inv == ["- `373b:1085` page 0xff04 usage 0x0002 Compx 2.4G Receiver",
+                   "- `373b:1085` page 0xff03 usage 0x0000 Compx 2.4G Receiver"]
+    assert hid_inventory([], set()) == ["- (ไม่มี)"]
+    q = parse_qs(urlparse(issue_url("9.9.9", ["- x"], inv)).query)
+    assert q["hid"] == ["\n".join(inv)] and "hid" not in parse_qs(urlparse(issue_url("9.9.9", ["- x"])).query)
 
     # อัปเดตตัวเอง: สลับไฟล์ได้, ถ้าวางไฟล์ใหม่ไม่ได้ต้องคืนตัวเดิม, ไฟล์โหลดไม่ครบต้องถูกปฏิเสธ
     import tempfile
