@@ -8,7 +8,8 @@ from batterytray.config import (APP_DIR, DATA_DIR, DEFAULTS, ERROR_LOG, FROZEN, 
                                 load_cache, log_error, save_cache)
 from batterytray.devices import discover
 from batterytray.history import estimate_remaining_h, fmt_remaining, record_history
-from batterytray.report import device_lines, hid_inventory, issue_url, known_usb_keys
+from batterytray.report import device_lines, issue_url
+from batterytray.scan import build_entries, group_hid, read_descriptors, scan_lines, OK
 from batterytray.icons import make_icon, taskbar_is_light, tooltip
 from batterytray.settings_ui import settings_window
 from batterytray.system import INSTALL_DIR, WAIT_FLAG, acquire_single_instance, launch_cmd, needs_install, relaunch, self_install
@@ -86,13 +87,61 @@ def app():
                     icon.icon, icon.title = make_icon(None, light=light), tooltip(name, None)
             save_cache(cache)
 
-    def open_settings(*_):
+    def run_scan():
+        """สแกนทุกอุปกรณ์ HID (อ่านแบตเฉพาะแหล่งที่รองรับ) → (entries, มีอุปกรณ์อ่านได้ที่ยังไม่มีไอคอน)"""
+        import hid
+        with lock:  # ไม่ให้ชนกับรอบ refresh ที่คุยกับดองเกิลอยู่
+            groups = group_hid(hid.enumerate())
+            devs = discover(cache)
+            results = {}
+            for d in devs:
+                if d.get("no_battery"):
+                    continue
+                try:
+                    results[d["key"]] = d["read"]()
+                except Exception:
+                    log_error(f"scan read {d['key']}")
+                    results[d["key"]] = None
+            save_cache(cache)
+        entries = build_entries(groups, devs, results)
+        need = [e["key"] for e in entries if e["status"] != OK and not e["no_battery"]]
+        entries = build_entries(groups, devs, results, read_descriptors(groups, need))
+        tray_keys = {d["key"] for d in devices}
+        new_found = any(results.get(d["key"]) and d["key"] not in tray_keys for d in devs)
+        return entries, new_found
+
+    def report_url(entries=None):
+        if entries is None:
+            entries, _ = run_scan()
+        for max_desc in (96, 24, 0):  # GitHub รับ URL ได้ราว 8k ตัวอักษร
+            url = issue_url(VERSION, device_lines(all_devices, last, label), scan_lines(entries, max_desc))
+            if len(url) < 7500:
+                break
+        return url
+
+    def send_report(entries=None):
+        """เปิดหน้า New Issue (เวอร์ชัน + อุปกรณ์ + ผลสแกน) และโฟลเดอร์ log ถ้ามี error.log ให้ลากแนบ"""
+        import os
+        import webbrowser
+        try:
+            webbrowser.open(report_url(entries))
+        except Exception:
+            log_error("report")
+            webbrowser.open(issue_url(VERSION, device_lines(all_devices, last, label)))
+        if ERROR_LOG.exists():
+            os.startfile(DATA_DIR)
+
+    def report_issue(*_):
+        threading.Thread(target=send_report, daemon=True).start()
+
+    def open_settings(*_, scan=False):
         if not settings_open.acquire(blocking=False):
             return  # เปิดอยู่แล้ว
 
         def run():
             try:
-                settings_window(all_devices, settings, last, on_save=wake.set, history=history)
+                settings_window(all_devices, settings, last, on_save=wake.set, history=history,
+                                on_scan=run_scan, on_report=send_report, on_rescan=rescan, open_scan=scan)
             finally:
                 settings_open.release()
         threading.Thread(target=run, daemon=True).start()
@@ -106,6 +155,7 @@ def app():
     def rescan(*_):
         # ponytail: เริ่มโปรเซสใหม่แทนการเพิ่ม/ลบไอคอนสด ๆ
         cache.pop("kinds", None)
+        cache.pop("compx_pages", None)
         cache.pop("logi", None)
         save_cache(cache)
         relaunch(launch_cmd(), APP_DIR)
@@ -142,20 +192,6 @@ def app():
         verb = "อัปเดตเป็น" if can_self_update() else "ดาวน์โหลด"
         return f"{verb} {update.get('tag')} ตอนนี้" if can_self_update() else f"{verb}เวอร์ชันใหม่ ({update.get('tag')})"
 
-    def report_issue(*_):
-        """เปิดหน้า New Issue (กรอกเวอร์ชัน + อุปกรณ์ให้แล้ว) และโฟลเดอร์ log ถ้ามี error.log ให้ลากแนบ"""
-        import os
-        import webbrowser
-        try:
-            import hid
-            inventory = hid_inventory(hid.enumerate(), known_usb_keys(all_devices))
-        except Exception:
-            log_error("hid inventory")
-            inventory = None
-        webbrowser.open(issue_url(VERSION, device_lines(all_devices, last, label), inventory))
-        if ERROR_LOG.exists():
-            os.startfile(DATA_DIR)
-
     def open_release_page():
         import webbrowser
         webbrowser.open(update.get("url", RELEASES_PAGE))
@@ -185,6 +221,7 @@ def app():
     menu = pystray.Menu(pystray.MenuItem(update_label, on_update, visible=lambda _: bool(update)),
                         pystray.MenuItem("ตั้งค่า...", open_settings, default=True),
                         pystray.MenuItem("รีเฟรช", lambda *_: wake.set()),
+                        pystray.MenuItem("สแกนอุปกรณ์...", lambda *_: open_settings(scan=True)),
                         pystray.MenuItem("ค้นหาอุปกรณ์ใหม่", rescan),
                         pystray.MenuItem("เช็คอัปเดต",
                                          lambda *_: threading.Thread(target=check_update, args=(True,), daemon=True).start()),

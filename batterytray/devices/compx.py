@@ -65,34 +65,39 @@ def compx_query(path, kind, tries=8):
     return None
 
 
-def pick_paths(infos):
-    """{'vid:pid': path} หนึ่งช่องต่อดองเกิล — ใช้หน้า 0xFF02 ก่อน ถ้าไม่มีใช้หน้าของผู้ผลิตที่ต่ำสุด (≥0xFF00)"""
-    best = {}
+def candidate_paths(infos):
+    """{'vid:pid': [(page, path), ...]} ทุกช่องของผู้ผลิต (≥0xFF00) ต่อดองเกิล เรียงหน้า 0xFF02 ก่อน แล้วตามเลขหน้า"""
+    out = {}
     for d in infos:
         if d["vendor_id"] not in COMPX_VIDS or d["usage_page"] < 0xFF00:
             continue
-        key = f"{d['vendor_id']:04x}:{d['product_id']:04x}"
-        rank = (d["usage_page"] != VENDOR_PAGE, d["usage_page"])
-        if key not in best or rank < best[key][0]:
-            best[key] = (rank, d["path"])
-    return {k: path for k, (_, path) in best.items()}
+        out.setdefault(f"{d['vendor_id']:04x}:{d['product_id']:04x}", []).append((d["usage_page"], d["path"]))
+    return {k: sorted(v, key=lambda pv: (pv[0] != VENDOR_PAGE, pv[0])) for k, v in out.items()}
 
 
-def compx_devices(kinds):
+def compx_devices(kinds, pages=None):
+    """kinds/pages = cache ที่จำว่าดองเกิลไหนเป็นเมาส์/คีย์บอร์ด และตอบบนช่องหน้าไหน"""
+    pages = {} if pages is None else pages
     labels = {"mouse": "เมาส์", "keyboard": "คีย์บอร์ด", None: "อุปกรณ์"}
-    paths = pick_paths(hid.enumerate())
     devices = []
-    for key, path in paths.items():
+    for key, cands in candidate_paths(hid.enumerate()).items():
         dev = {"key": key, "kind": kinds.get(key), "name": f"{labels[kinds.get(key)]} 2.4G ({key})"}
 
-        def read(path=path, key=key, dev=dev):
-            kind = kinds.get(key)
-            for k in [kind] if kind else PROTOCOLS:
-                res = compx_query(path, k, tries=8 if kind else 3)
+        def read(cands=cands, key=key, dev=dev):
+            kind, page = kinds.get(key), pages.get(key)
+            if kind and page is not None:  # รู้แล้วว่าตอบช่องไหน — ลองตรงนั้นก่อน
+                hit = [pv for pv in cands if pv[0] == page]
+                res = hit and compx_query(hit[0][1], kind)
                 if res:
-                    kinds[key] = dev["kind"] = k
-                    dev["name"] = f"{labels[k]} 2.4G ({key})"
                     return res
+            for pg, path in cands:  # ยังไม่รู้ หรือที่เดิมไม่ตอบ — ลองทุกช่อง × ทุกแบบคำสั่ง
+                for k in [kind] if kind else PROTOCOLS:
+                    res = compx_query(path, k, tries=3)
+                    if res:
+                        kinds[key] = dev["kind"] = k
+                        pages[key] = pg
+                        dev["name"] = f"{labels[k]} 2.4G ({key})"
+                        return res
             return None
 
         dev["read"] = read

@@ -19,7 +19,8 @@ def work_area_height(root):
     return root.winfo_screenheight()
 
 
-def settings_window(devices, settings, last, on_save, history=None):
+def settings_window(devices, settings, last, on_save, history=None, on_scan=None, on_report=None, on_rescan=None,
+                    open_scan=False):
     """หน้าต่างตั้งค่า (customtkinter ใน thread ของตัวเอง)
     ดีไซน์: ui-ux-pro-max — Dark slate + status green, สถานะมีข้อความกำกับ (ไม่ใช้สีอย่างเดียว)"""
     import webbrowser
@@ -30,7 +31,7 @@ def settings_window(devices, settings, last, on_save, history=None):
          "text": "#F8FAFC", "sub": "#94A3B8", "accent": "#22C55E", "on_accent": "#0F172A",
          "accent_hover": "#16A34A", "danger": "#EF4444"}
     TH = "Leelawadee UI"
-    GLYPH = {"mouse": "", "keyboard": "", "headset": "", None: ""}  # Segoe MDL2 Assets
+    GLYPH = {"mouse": "", "keyboard": "", "headset": "", None: ""}  # Segoe MDL2 Assets
 
     def hexc(rgb):
         return "#%02x%02x%02x" % rgb
@@ -69,6 +70,10 @@ def settings_window(devices, settings, last, on_save, history=None):
     head.pack(fill="x")
     ctk.CTkLabel(head, text="Battery Tray", font=(TH, 24, "bold"), text_color=C["text"]).pack(side="left")
     ctk.CTkLabel(head, text=f"v{VERSION}", font=(TH, 12), text_color=C["sub"]).pack(side="left", padx=8, pady=(8, 0))
+    if on_scan:
+        ctk.CTkButton(head, text="สแกนอุปกรณ์", width=104, height=30, corner_radius=8, font=(TH, 12),
+                      fg_color=C["muted"], hover_color=C["line"], text_color=C["text"], cursor="hand2",
+                      command=lambda: show_scan()).pack(side="right")
     summary = f"{len(shown)} อุปกรณ์" + (f"  ·  ต่ำสุด {min(known)}%" if known else "")
     ctk.CTkLabel(body, text=summary, font=(TH, 13), text_color=C["sub"]).pack(anchor="w", pady=(0, 10))
 
@@ -99,6 +104,104 @@ def settings_window(devices, settings, last, on_save, history=None):
         return cv
 
     graph_win = {}  # เปิดได้ทีละหน้าต่าง
+    scan_win = {}
+
+    def show_scan():
+        """หน้าต่างสแกน: รันสแกนใน thread แยก แล้วแสดงสถานะทุกอุปกรณ์ + ปุ่มส่งผล"""
+        import threading
+        if scan_win.get("w") is not None and scan_win["w"].winfo_exists():
+            scan_win["w"].focus_force()
+            return
+        top = ctk.CTkToplevel(root, fg_color=C["bg"])
+        top.title("สแกนอุปกรณ์")
+        top.resizable(False, False)
+        top.attributes("-topmost", True)
+        scan_win["w"] = top
+        ctk.CTkLabel(top, text="สแกนอุปกรณ์", font=(TH, 18, "bold"), text_color=C["text"]).pack(anchor="w", padx=18, pady=(14, 0))
+        ctk.CTkLabel(top, text="อุปกรณ์ HID ทั้งหมดในเครื่อง · ส่งคำสั่งเฉพาะยี่ห้อที่รู้วิธีอ่านแบตแล้ว",
+                     font=(TH, 12), text_color=C["sub"]).pack(anchor="w", padx=18, pady=(0, 8))
+        listbox = ctk.CTkScrollableFrame(top, width=460, height=300, fg_color=C["card"], corner_radius=16)
+        listbox.pack(padx=16, pady=(0, 8))
+        status = ctk.CTkLabel(top, text="กำลังสแกน... (ขยับเมาส์/กดปุ่มอุปกรณ์ไว้ จะอ่านค่าได้ง่ายขึ้น)",
+                              font=(TH, 12), text_color=C["sub"])
+        status.pack(anchor="w", padx=18)
+        bar = ctk.CTkFrame(top, fg_color="transparent")
+        bar.pack(fill="x", padx=16, pady=(8, 14))
+        state = {}
+
+        def btn(text, cmd, primary=False):
+            return ctk.CTkButton(bar, text=text, height=36, corner_radius=10, font=(TH, 13, "bold" if primary else "normal"),
+                                 fg_color=C["accent"] if primary else "transparent", border_width=0 if primary else 1,
+                                 border_color=C["border"], hover_color=C["accent_hover"] if primary else C["muted"],
+                                 text_color=C["on_accent"] if primary else C["text"], cursor="hand2", command=cmd)
+
+        send_btn = btn("ส่งผลสแกน", lambda: on_report and threading.Thread(
+            target=on_report, args=(state.get("entries"),), daemon=True).start(), primary=True)
+        again_btn = btn("สแกนใหม่", lambda: start())
+        add_btn = btn("เพิ่มลงแถบงาน", lambda: (top.destroy(), root.destroy(), on_rescan and on_rescan()))
+        send_btn.pack(side="right")
+        again_btn.pack(side="right", padx=(0, 8))
+
+        def render(entries, new_found):
+            for w in listbox.winfo_children():
+                w.destroy()
+            icon = {"ok": ("✅", C["accent"]), "info": ("ℹ", C["sub"]), "found": ("⚠", "#F59E0B"),
+                    "unsupported": ("❔", C["sub"])}
+            for e in entries:
+                row = ctk.CTkFrame(listbox, fg_color="transparent")
+                row.pack(fill="x", pady=4, padx=4)
+                mark, color = icon[e["status"]]
+                ctk.CTkLabel(row, text=mark, font=(TH, 15), text_color=color, width=26).pack(side="left", anchor="n")
+                col = ctk.CTkFrame(row, fg_color="transparent")
+                col.pack(side="left", fill="x", expand=True)
+                ctk.CTkLabel(col, text=f"{e['name']}  ·  {e['key']}", font=(TH, 13, "bold"), text_color=C["text"],
+                             anchor="w", justify="left", wraplength=400).pack(anchor="w")
+                ctk.CTkLabel(col, text=e["detail"], font=(TH, 12), text_color=C["sub"], anchor="w", justify="left",
+                             wraplength=400).pack(anchor="w")
+            if not entries:
+                ctk.CTkLabel(listbox, text="ไม่พบอุปกรณ์", font=(TH, 13), text_color=C["sub"]).pack(pady=20)
+            counts = {k: sum(e["status"] == k for e in entries) for k in ("ok", "info", "found", "unsupported")}
+            parts = [f"อ่านได้ {counts['ok']}"] + [f"{label} {counts[k]}" for k, label in
+                                                (("found", "อ่านไม่ได้"), ("unsupported", "ยังไม่รองรับ"), ("info", "ไม่ส่งค่าแบต"))
+                                                if counts[k]]
+            hint = "  —  ส่งผลสแกนช่วยให้รองรับเพิ่มได้" if counts["found"] or counts["unsupported"] else ""
+            status.configure(text=" · ".join(parts) + hint)
+            if new_found and on_rescan:
+                add_btn.pack(side="left")
+            again_btn.configure(state="normal")
+            send_btn.configure(state="normal")
+
+        def start():
+            again_btn.configure(state="disabled")
+            send_btn.configure(state="disabled")
+            add_btn.pack_forget()
+            status.configure(text="กำลังสแกน... (ขยับเมาส์/กดปุ่มอุปกรณ์ไว้ จะอ่านค่าได้ง่ายขึ้น)")
+            box = {}
+
+            def work():
+                try:
+                    box["r"] = on_scan()
+                except Exception as exc:
+                    box["err"] = exc
+
+            def poll():
+                if not top.winfo_exists():
+                    return
+                if "r" in box:
+                    state["entries"] = box["r"][0]
+                    render(*box["r"])
+                elif "err" in box:
+                    status.configure(text=f"สแกนไม่สำเร็จ: {box['err']}")
+                    again_btn.configure(state="normal")
+                else:
+                    top.after(200, poll)
+            threading.Thread(target=work, daemon=True).start()
+            top.after(200, poll)
+
+        top.bind("<Escape>", lambda _: top.destroy())
+        root.update_idletasks()
+        top.geometry(f"+{root.winfo_rootx() + root.winfo_width() + 8}+{root.winfo_rooty()}")
+        start()
 
     def show_graph(key, name):
         if graph_win.get("w") is not None and graph_win["w"].winfo_exists():
@@ -286,4 +389,6 @@ def settings_window(devices, settings, last, on_save, history=None):
         w, h = root.winfo_reqwidth(), root.winfo_reqheight()
         root.geometry(f"+{max(0, (root.winfo_screenwidth() - w) // 2)}+{max(0, (work_area_height(root) - h) // 2)}")
     root.after(10, center)
+    if open_scan and on_scan:
+        root.after(300, show_scan)
     root.mainloop()

@@ -6,14 +6,15 @@ import subprocess
 import sys
 from batterytray.config import APP_DIR, EXE_NAME, load_cache
 from batterytray.devices import discover
-from batterytray.devices.compx import kb_frame, kb_parse, mouse_frame, mouse_parse, pick_paths
+from batterytray.devices.compx import kb_frame, kb_parse, mouse_frame, mouse_parse, candidate_paths
 from batterytray.devices.headsetcontrol import headsetcontrol_parse
 from batterytray.devices.logitech import logi_battery, volt_to_pct
 from batterytray.devices import nobattery
 from batterytray.devices.nobattery import nobattery_devices
 from batterytray.history import estimate_remaining_h, fmt_remaining, fmt_span, history_points, record_history
 from batterytray.icons import tooltip
-from batterytray.report import device_lines, hid_inventory, issue_url, known_usb_keys
+from batterytray.report import device_lines, issue_url, usb_key
+from batterytray.scan import build_entries, group_hid, scan_lines
 from batterytray.system import acquire_single_instance, install_copy, needs_install, same_dir
 from batterytray.updater import download_update, is_newer, swap_exe
 
@@ -96,19 +97,38 @@ def test():
         {"vendor_id": 0x373B, "product_id": 0x1085, "usage_page": 0x0001, "usage": 2, "path": b"bm"},
         {"vendor_id": 0x046D, "product_id": 0xC547, "usage_page": 0xFF00, "usage": 2, "path": b"logi"},
     ]
-    assert pick_paths(hid_list) == {"3554:f58e": b"a2", "373b:1085": b"b3"}
+    assert candidate_paths(hid_list) == {"3554:f58e": [(0xFF02, b"a2"), (0xFF05, b"a5")],
+                                         "373b:1085": [(0xFF03, b"b3"), (0xFF04, b"b4")]}
 
-    # รายงาน: VID:PID ที่รู้จัก, รายชื่อช่องผู้ผลิตที่ยังไม่รู้จัก, ช่อง hid ในลิงก์
-    known = known_usb_keys([{"key": "3554:f58e"}, {"key": "usb:040b:0897"}, {"key": "logi:c547:1"},
-                            {"key": "hc:0x1038:0x12ad"}, {"key": "bt:WH-1000XM4"}, {"key": "none"}])
-    assert known == {"3554:f58e", "040b:0897", "046d:c547", "1038:12ad"}
-    inv = hid_inventory([dict(d, product_string="2.4G Receiver", manufacturer_string="Compx") for d in hid_list],
-                        known)
-    assert inv == ["- `373b:1085` page 0xff04 usage 0x0002 Compx 2.4G Receiver",
-                   "- `373b:1085` page 0xff03 usage 0x0000 Compx 2.4G Receiver"]
-    assert hid_inventory([], set()) == ["- (ไม่มี)"]
-    q = parse_qs(urlparse(issue_url("9.9.9", ["- x"], inv)).query)
-    assert q["hid"] == ["\n".join(inv)] and "hid" not in parse_qs(urlparse(issue_url("9.9.9", ["- x"])).query)
+    # รายงาน: VID:PID จาก key ของแต่ละแหล่ง
+    assert [usb_key({"key": k}) for k in ("3554:f58e", "usb:040b:0897", "logi:c547:1", "hc:0x1038:0x12ad",
+                                          "bt:WH-1000XM4", "none")] == ["3554:f58e", "040b:0897", "046d:c547",
+                                                                        "1038:12ad", None, None]
+    q = parse_qs(urlparse(issue_url("9.9.9", ["- x"], ["✅ a"])).query)
+    assert q["hid"] == ["✅ a"] and "hid" not in parse_qs(urlparse(issue_url("9.9.9", ["- x"])).query)
+
+    # สแกนอุปกรณ์: รวม collection ต่ออุปกรณ์, สถานะ ok/found/unsupported, ข้ามอุปกรณ์ HID มาตรฐาน
+    scan_hid = [dict(d, product_string="VK 75 Wireless Receiver", manufacturer_string="") for d in hid_list[2:5]] + [
+        {"vendor_id": 0x3554, "product_id": 0xF58E, "usage_page": 0xFF02, "usage": 2, "path": b"a2",
+         "product_string": "2.4G Wireless Receiver", "manufacturer_string": "Compx"},
+        {"vendor_id": 0x1234, "product_id": 0x0001, "usage_page": 0x0001, "usage": 6, "path": b"kbd",
+         "product_string": "HID Keyboard", "manufacturer_string": ""},
+        {"vendor_id": 0x25A7, "product_id": 0xFA70, "usage_page": 0xFF00, "usage": 1, "path": b"nk",
+         "product_string": "NK mouse NANO dongle", "manufacturer_string": ""}]
+    groups = group_hid(scan_hid)
+    assert groups["373b:1085"]["pages"] == [(0xFF04, 2), (0xFF03, 0), (0x0001, 2)] and groups["373b:1085"]["paths"][0xFF03] == b"b3"
+    devs = [{"key": "3554:f58e", "name": "เมาส์"}, {"key": "373b:1085", "name": "อุปกรณ์ 2.4G"},
+            {"key": "usb:040b:0897", "name": "หูฟัง", "no_battery": True}, {"key": "bt:Buds", "name": "Buds"}]
+    entries = build_entries(groups, devs, {"3554:f58e": (80, False), "bt:Buds": (55, True)},
+                            {("373b:1085", 0xFF03): "0603ff" * 50, ("25a7:fa70", 0xFF00): "06"})
+    got = [(e["key"], e["status"]) for e in entries]
+    assert got == [("bt:Buds", "ok"), ("3554:f58e", "ok"), ("040b:0897", "info"), ("373b:1085", "found"),
+                   ("25a7:fa70", "unsupported")], got
+    lines = scan_lines(entries, max_desc=4)
+    assert lines[0].startswith("✅ `bt:Buds`") and any("❔ `25a7:fa70` NK mouse NANO dongle" in x for x in lines)
+    assert "    page 0xff03 usage 0x0000 desc 0603ff06…" in lines and "    page 0xff00 usage 0x0001 desc 06" in lines
+    assert not any("1234:0001" in x for x in lines)                      # คีย์บอร์ด HID มาตรฐานไม่อยู่ในรายงาน
+    assert scan_lines([]) == ["(ไม่พบอุปกรณ์)"]
 
     # อัปเดตตัวเอง: สลับไฟล์ได้, ถ้าวางไฟล์ใหม่ไม่ได้ต้องคืนตัวเดิม, ไฟล์โหลดไม่ครบต้องถูกปฏิเสธ
     import tempfile

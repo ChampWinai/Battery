@@ -23,37 +23,20 @@ def device_lines(devices, last, label):
     return lines or ["- (ไม่พบอุปกรณ์ที่รองรับ)"]
 
 
-def known_usb_keys(devices):
-    """VID:PID ('3554:f58e') ของอุปกรณ์ที่แอปรู้จักแล้ว — จาก key ของแต่ละแหล่ง"""
-    keys = set()
-    for d in devices:
-        k = d["key"]
-        if k.startswith("usb:"):
-            keys.add(k[4:])
-        elif k.startswith("logi:"):
-            keys.add("046d:" + k.split(":")[1])
-        elif k.startswith("hc:"):
-            try:
-                _, vid, pid = k.split(":")
-                keys.add(f"{int(vid, 16):04x}:{int(pid, 16):04x}")
-            except ValueError:
-                pass
-        elif re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{4}", k):
-            keys.add(k)
-    return keys
-
-
-def hid_inventory(infos, known_keys, limit=25):
-    """ช่องข้อมูลของผู้ผลิต (usage page ≥0xFF00) ที่แอปยังไม่รู้จัก — ช่วยหาดองเกิลที่ยังไม่รองรับ"""
-    seen, lines = set(), []
-    for d in infos:
-        key = f"{d['vendor_id']:04x}:{d['product_id']:04x}"
-        if d["usage_page"] < 0xFF00 or key in known_keys or (key, d["usage_page"]) in seen:
-            continue
-        seen.add((key, d["usage_page"]))
-        name = " ".join(x for x in (d.get("manufacturer_string"), d.get("product_string")) if x).strip()
-        lines.append(f"- `{key}` page 0x{d['usage_page']:04x} usage 0x{d['usage']:04x} {name}".rstrip())
-    return lines[:limit] or ["- (ไม่มี)"]
+def usb_key(dev):
+    """VID:PID ('3554:f58e') ของอุปกรณ์จาก key ของแต่ละแหล่ง หรือ None (เช่น Bluetooth)"""
+    k = dev["key"]
+    if k.startswith("usb:"):
+        return k[4:]
+    if k.startswith("logi:"):
+        return "046d:" + k.split(":")[1]
+    if k.startswith("hc:"):
+        try:
+            _, vid, pid = k.split(":")
+            return f"{int(vid, 16):04x}:{int(pid, 16):04x}"
+        except ValueError:
+            return None
+    return k if re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{4}", k) else None
 
 
 def issue_url(version, lines, hid_lines=None):

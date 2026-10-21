@@ -10,7 +10,7 @@ from batterytray.devices.nobattery import nobattery_devices
 def discover(cache):
     """รวมอุปกรณ์จากทุกแหล่ง — คืนรายการ {key, kind, name, read}"""
     devices = []
-    for source in (lambda: compx_devices(cache.setdefault("kinds", {})), lambda: logi_devices(cache),
+    for source in (lambda: compx_devices(cache.setdefault("kinds", {}), cache.setdefault("compx_pages", {})), lambda: logi_devices(cache),
                    headset_devices, bt_devices, lambda: nobattery_devices(cache)):
         try:
             devices += source()
