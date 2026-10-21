@@ -18,6 +18,8 @@ def group_hid(infos):
         if (d["usage_page"], d["usage"]) not in g["pages"]:
             g["pages"].append((d["usage_page"], d["usage"]))
         g["paths"].setdefault(d["usage_page"], d["path"])
+        if (d["usage_page"], d["usage"]) == (1, 6):
+            g["kbd_path"] = d["path"]
     return out
 
 
@@ -63,7 +65,7 @@ def scan_lines(entries, max_desc=96, max_samples=3, sample_bytes=32):
         lines.append(f"{icon[e['status']]} `{e['key']}` {e['name']} — {e['detail']}")
         if e["status"] != OK and not e["no_battery"]:
             for page, usage in e["pages"]:
-                if page < 0xFF00:
+                if page < 0xFF00 and (page, usage) != (1, 6):
                     continue
                 desc = e["descriptors"].get(page, "")
                 cut = desc[:max_desc * 2] + ("…" if len(desc) > max_desc * 2 else "")
@@ -78,9 +80,11 @@ def read_descriptors(groups, keys):
     import hid
     out = {}
     for k in keys:
-        for page, path in groups.get(k, {}).get("paths", {}).items():
-            if page < 0xFF00:
-                continue
+        g = groups.get(k, {})
+        targets = [(pg, path) for pg, path in g.get("paths", {}).items() if pg >= 0xFF00]
+        if g.get("kbd_path"):  # ช่องคีย์บอร์ดหลัก — บางระบบ (VK HUB) คุยผ่าน feature report ที่นี่
+            targets.append((1, g["kbd_path"]))
+        for page, path in targets:
             dev = hid.device()
             try:
                 dev.open_path(path)

@@ -11,6 +11,7 @@ from batterytray.devices.headsetcontrol import headsetcontrol_parse
 from batterytray.devices.logitech import logi_battery, volt_to_pct
 from batterytray.devices import nobattery
 from batterytray.devices.nobattery import nobattery_devices
+from batterytray.devices.vkhub import feature_sizes, parse_status, status_frame
 from batterytray.history import estimate_remaining_h, fmt_remaining, fmt_span, history_points, record_history
 from batterytray.icons import tooltip
 from batterytray.report import device_lines, issue_url, usb_key
@@ -134,6 +135,31 @@ def test():
     assert nk["samples"] == {0xFF00: ["05" + "64" * 40, "0563"]}
     sl = scan_lines(e2, max_desc=0, max_samples=1, sample_bytes=4)
     assert "      ↳ ส่งออกมาเอง: 05646464…" in sl and not any("0563" in x for x in sl)   # จำกัดจำนวน/ความยาวได้
+
+    # VK HUB (Valkyrie VK75 ฯลฯ): descriptor → ขนาด feature report, เฟรม 0xF7, อ่านคำตอบ
+    kbd_desc = bytes.fromhex(
+        "05010906a101"            # Generic Desktop / Keyboard
+        "0507190029ff150025ff750895068100"   # input keys
+        "0600ff0901"              # vendor usage
+        "15002600ff75089540b102"  # Feature: 8 bit × 64 (report ID 0)
+        "c0")
+    assert feature_sizes(kbd_desc) == {0: 64}
+    assert feature_sizes(bytes.fromhex("05010906a1018501750895019501b1028502750895108502b102c0")) == {1: 1, 2: 16}
+    apple_desc = bytes.fromhex("05010906a101050719e029e71500250175019508810295057508810305081901290591029501750391038501c0")
+    assert feature_sizes(apple_desc).get(0, 0) < 64                      # คีย์บอร์ด Apple แท้: ไม่ส่งคำสั่ง
+    assert status_frame() == bytes([0x00, 0xF7]) + bytes(63)
+    assert parse_status(bytes([1, 82, 0, 0, 1, 1, 1, 0, 0])) == (82, None)  # คีย์บอร์ดออนไลน์ 82%
+    assert parse_status(bytes([1, 70, 55, 0, 0, 1, 3, 0, 0])) == (70, None)  # ทั้งคีย์บอร์ดและเมาส์
+    assert parse_status(bytes([1, 82, 0, 1, 1, 1, 1, 0, 0])) is None         # คีย์บอร์ดหลับ/ออฟไลน์
+    assert parse_status(bytes([0, 82, 0, 0, 1, 1, 1, 0, 0])) is None         # ดองเกิลบอกว่ายังอ่านไม่ได้
+    assert parse_status(bytes([1, 0, 60, 0, 0, 1, 2, 0, 0])) is None         # มีแต่เมาส์
+    assert parse_status(bytes(3)) is None
+    vk = group_hid([{"vendor_id": 0x05AC, "product_id": 0x024F, "usage_page": 1, "usage": 6, "path": b"kbd",
+                     "product_string": "VK 75 Wireless Receiver", "manufacturer_string": ""},
+                    {"vendor_id": 0x05AC, "product_id": 0x024F, "usage_page": 0xFFFF, "usage": 1, "path": b"ff"}])
+    assert vk["05ac:024f"]["kbd_path"] == b"kbd"
+    vk_lines = scan_lines(build_entries(vk, [], {}, {("05ac:024f", 1): "050109", ("05ac:024f", 0xFFFF): "06ffff"}))
+    assert "    page 0x0001 usage 0x0006 desc 050109" in vk_lines and "    page 0xffff usage 0x0001 desc 06ffff" in vk_lines
 
     # อัปเดตตัวเอง: สลับไฟล์ได้, ถ้าวางไฟล์ใหม่ไม่ได้ต้องคืนตัวเดิม, ไฟล์โหลดไม่ครบต้องถูกปฏิเสธ
     import tempfile
