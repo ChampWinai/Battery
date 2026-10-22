@@ -4,6 +4,7 @@
   ช่อง raw HID (FF60 32 ไบต์, report ID 0) — ไดรเวอร์เลือกจาก &mi_XX ใน path: 2.4G = MI_03, สาย USB = MI_02
   ส่ง output report 33 ไบต์: [0x00, 0x20, 0x01, 0 … 0, checksum] — checksum (ไบต์ 32) = ผลรวมไบต์ 0..31
   รับ: [0x20, 0x01, 0x00, %แบต, …] (hidapi ตัด report ID ออกแล้ว) — %แบต 0 = ยังไม่รู้ค่า
+  ไดรเวอร์: เขียนซ้ำ 1 ครั้งถ้าเขียนไม่ผ่าน, อ่านซ้ำ 20 ครั้งจนคำตอบตรง — ไม่มีคำสั่งเปิดการเชื่อมต่อก่อนถามแบต
 """
 import hid
 
@@ -21,7 +22,10 @@ def battery_frame():
 
 
 def parse_battery(r):
-    """(pct, None) หรือ None ถ้าไม่ใช่คำตอบของคำสั่งแบต / ยังไม่รู้ค่า"""
+    """(pct, None) หรือ None ถ้าไม่ใช่คำตอบของคำสั่งแบต / ยังไม่รู้ค่า — รับทั้งแบบที่มี report ID 0 นำหน้า"""
+    r = bytes(r)
+    if r[:2] == b"\x00\x20":
+        r = r[1:]
     if len(r) < 4 or list(r[:3]) != [0x20, 0x01, 0x00] or not r[3]:
         return None
     return min(r[3], 100), None
@@ -30,33 +34,56 @@ def parse_battery(r):
 TRACE = {}  # path → บันทึกการคุยรอบล่าสุด (แนบในผลสแกน เพื่อดูว่าติดขั้นไหน)
 
 
-def query(path, tries=20, timeout=100):
-    log = TRACE[path] = []
+def _open(path):
     dev = hid.device()
+    dev.open_path(path)
+    dev.set_nonblocking(True)
+    while dev.read(64):  # ล้าง report ที่ค้าง ไม่ให้ปนกับคำตอบ
+        pass
+    return dev
+
+
+def query(path, listen=(), rounds=2, wait=1.0):
+    """เขียนคำสั่งแบตทาง path แล้วฟังคำตอบจาก path และทุกช่องใน listen (เผื่อดองเกิลตอบทางช่องอื่น)
+    ส่งซ้ำได้ rounds รอบ (เผื่อคีย์บอร์ดกำลังตื่น) — แต่ละรอบรอ wait วินาที"""
+    import time
+    log = TRACE[path] = []
+    devs = {}
     try:
-        dev.open_path(path)
-    except OSError as e:
-        log.append(f"open: {e}")
-        return None
-    try:
-        while dev.read(64, 0):  # ล้าง report ที่ค้าง ไม่ให้ปนกับคำตอบ
-            pass
-        n = dev.write(battery_frame())
-        log.append(f"write {n}")
-        if n < 0:
-            return None
-        for _ in range(tries):  # ไดรเวอร์อ่านซ้ำได้ 20 ครั้งจนกว่าคำตอบจะตรงคำสั่ง
-            r = bytes(dev.read(64, timeout))
-            if r and len(log) < 6:
-                log.append(r[:8].hex())
-            got = parse_battery(r) if r else None
-            if got:
-                return got
-        log.append("no reply" if len(log) == 1 else "no match")
+        for p in [path] + [p for p in listen if p != path]:
+            try:
+                devs[p] = _open(p)
+            except OSError as e:
+                if p == path:
+                    log.append(f"open: {e}")
+                    return None
+        tag = {p: "" if p == path else f"(ช่อง {i}) " for i, p in enumerate(devs)}
+        for _ in range(rounds):
+            n = devs[path].write(battery_frame())
+            if n < 0:  # ไดรเวอร์เขียนซ้ำหนึ่งครั้งเมื่อเขียนไม่ผ่าน
+                time.sleep(0.01)
+                n = devs[path].write(battery_frame())
+            log.append(f"write {n}")
+            if n < 0:
+                return None
+            end = time.time() + wait
+            while time.time() < end:
+                for p, dev in devs.items():
+                    r = bytes(dev.read(64))
+                    if not r:
+                        continue
+                    if len(log) < 8:
+                        log.append(tag[p] + r[:8].hex())
+                    got = parse_battery(r)
+                    if got:
+                        return got
+                time.sleep(0.01)
+        log.append("no reply" if all(x.startswith("write") for x in log) else "no match")
     except OSError as e:
         log.append(f"error: {e}")
     finally:
-        dev.close()
+        for dev in devs.values():
+            dev.close()
     return None
 
 
@@ -74,7 +101,7 @@ def _rank(d):
 def _reader(paths):
     def read():
         for p in list(paths):
-            got = query(p)
+            got = query(p, paths)
             if got:
                 paths.remove(p)
                 paths.insert(0, p)  # จำช่องที่ตอบ ถามช่องนี้ก่อนรอบหน้า

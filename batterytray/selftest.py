@@ -147,22 +147,27 @@ def test():
     assert label("VK 75 Wireless Receiver") == "VK 75" and label("2.4G Dongle") == "คีย์บอร์ด Valkyrie"
     assert (0x05AC, 0x024F) in PRODUCTS
 
-    class FakeVK:  # ดองเกิลจำลอง: ตอบรายงานอื่นก่อน แล้วค่อยตอบคำสั่งแบต
-        sent = []
+    class FakeVK:  # ดองเกิลจำลอง: ตอบรายงานอื่นก่อน แล้วค่อยตอบคำสั่งแบต — ตอบทางช่อง FakeVK.reply_on
+        sent, devs, reply_on = [], {}, b"x"
 
         def __init__(self):
-            self.queue = [bytes([0x07, 0x00])]  # report ค้างจากก่อนส่งคำสั่ง ต้องถูกล้าง
+            self.queue, self.path = [bytes([0x07, 0x00])], None  # report ค้างจากก่อนส่งคำสั่ง ต้องถูกล้าง
 
-        def open_path(self, p): pass
+        def open_path(self, p):
+            self.path = p
+            FakeVK.devs[p] = self
+
+        def set_nonblocking(self, on): pass
         def close(self): pass
 
         def write(self, data):
             FakeVK.sent.append(bytes(data))
-            assert not self.queue, "ต้องล้าง report ค้างก่อนเขียน"
-            self.queue = [bytes([0x05, 0x77, 0x40]), bytes([0x20, 0x01, 0x00, 64]) + bytes(28)]
+            assert not any(d.queue for d in FakeVK.devs.values()), "ต้องล้าง report ค้างก่อนเขียน"
+            if FakeVK.reply_on:
+                FakeVK.devs[FakeVK.reply_on].queue = [bytes([0x05, 0x77, 0x40]), bytes([0x20, 0x01, 0x00, 64]) + bytes(28)]
             return len(data)
 
-        def read(self, n, timeout):
+        def read(self, n):
             return list(self.queue.pop(0)) if self.queue else []
 
     real_hid = valkyrie.hid
@@ -170,6 +175,13 @@ def test():
         valkyrie.hid = type("FakeHid", (), {"device": FakeVK})
         assert valkyrie.query(b"x") == (64, None) and FakeVK.sent == [battery_frame()]
         assert valkyrie.TRACE[b"x"] == ["write 33", "057740", "20010040" + "00" * 4]
+        FakeVK.reply_on = b"y"  # ดองเกิลตอบทางอีกช่อง
+        assert valkyrie.query(b"x", [b"x", b"y"]) == (64, None)
+        assert valkyrie.TRACE[b"x"][1] == "(ช่อง 1) 057740"
+        FakeVK.reply_on, FakeVK.sent = None, []  # ไม่ตอบเลย → ส่งซ้ำครบรอบแล้วบอก no reply
+        assert valkyrie.query(b"x", wait=0.05) is None and len(FakeVK.sent) == 2
+        assert valkyrie.TRACE[b"x"] == ["write 33", "write 33", "no reply"]
+        assert parse_battery(bytes([0, 0x20, 0x01, 0, 55])) == (55, None)
         vkd = lambda path, page, iface, name="VK 75 Wireless Receiver": {
             "vendor_id": 0x05AC, "product_id": 0x024F, "usage_page": page, "usage": 0x61, "path": path,
             "interface_number": iface, "product_string": name}
@@ -178,7 +190,7 @@ def test():
             vkd(b"kbd", 1, 0), vkd(b"ff60", 0xFF60, 2, ""), vkd(b"ff59", 0xFF59, 3, ""),  # ช่อง raw ไม่มีชื่อ
             {**vkd(b"other", 0xFF60, 3), "product_id": 0x0250}])})
         real_query = valkyrie.query
-        valkyrie.query = lambda p: tried.append(p) or ((70, None) if p == b"ff60" else None)
+        valkyrie.query = lambda p, listen=(): tried.append(p) or ((70, None) if p == b"ff60" else None)
         try:
             [dev] = valkyrie.valkyrie_devices()
             assert dev["name"] == "VK 75"
